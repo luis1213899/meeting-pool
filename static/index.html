@@ -118,6 +118,8 @@
         <div class="card-head">
           <h2>今天号池占用</h2>
           <div class="timeline-tools">
+            <span class="legend"><i class="lg-pool"></i>号池借出</span>
+            <span class="legend"><i class="lg-up"></i>上游已约</span>
             <button class="btn ghost tiny" id="tl-prev" type="button">前一天</button>
             <span id="tl-date" class="hint"></span>
             <button class="btn ghost tiny" id="tl-next" type="button">后一天</button>
@@ -153,6 +155,7 @@
             <p class="muted small" id="admin-sub">—</p>
           </div>
           <div class="admin-actions">
+            <button class="btn" id="btn-sync" type="button">同步会议</button>
             <button class="btn" id="btn-export" type="button">导出 CSV</button>
             <button class="btn" id="btn-diag" type="button">MCP 自检</button>
             <button class="btn" id="btn-refresh" type="button">刷新</button>
@@ -162,6 +165,7 @@
         </div>
 
         <div class="stat-strip" id="admin-stats"></div>
+        <div id="admin-problems"></div>
 
         <div class="card">
           <div class="table-wrap">

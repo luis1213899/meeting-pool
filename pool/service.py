@@ -73,6 +73,9 @@ def account_row(row: sqlite3.Row) -> dict:
         "health": row["health"],
         "health_note": row["health_note"],
         "checked_at": row["checked_at"],
+        "last_sync_at": row["last_sync_at"] if "last_sync_at" in row.keys() else "",
+        "sync_error": row["sync_error"] if "sync_error" in row.keys() else "",
+        "external_count": row["external_count"] if "external_count" in row.keys() else 0,
         "note": row["note"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -97,6 +100,8 @@ def booking_row(row: sqlite3.Row, account_label: str = "") -> dict:
         "password": row["password"],
         "host_key": row["host_key"] if "host_key" in row.keys() else "",
         "driver": row["driver"],
+        "upstream_state": row["upstream_state"] if "upstream_state" in row.keys() else "",
+        "cancel_error": row["cancel_error"] if "cancel_error" in row.keys() else "",
         "fail_reason": row["fail_reason"],
         "created_at": row["created_at"],
     }
@@ -261,6 +266,156 @@ def probe_account(conn: sqlite3.Connection, account_id: int, actor: str = "admin
     return data
 
 
+# --------------------------------------------------------------------------- 对账
+
+
+def sync_account(conn: sqlite3.Connection, account_id: int, actor: str = "system") -> dict:
+    """把腾讯会议侧「未开始 / 进行中」的会议拉回来，做三件事：
+
+    1. 号主自己在 App 里约的会 → 记入 external_meetings，参与占用与冲突判断
+    2. 号池预约的会如果上游已经没了 → 标 missing
+    3. 号池已取消、但上游还活着 → 标 cancel_failed（这就是「取消了却没真取消」）
+    """
+    acc = get_account(conn, account_id)
+    result = {"account_id": account_id, "label": acc["label"], "imported": 0,
+              "missing": 0, "cancel_failed": 0, "error": ""}
+    if acc["driver"] != "mcp":
+        conn.execute("UPDATE accounts SET last_sync_at=?, sync_error='' WHERE id=?",
+                     (iso(now()), account_id))
+        result["error"] = "非 MCP 账号，无需对账"
+        return result
+    token = decrypt_secret(acc["token_cipher"]) if acc["token_cipher"] else ""
+    if not token:
+        conn.execute("UPDATE accounts SET sync_error=? WHERE id=?", ("未绑定 Token", account_id))
+        result["error"] = "未绑定 Token"
+        return result
+
+    try:
+        meetings = get_driver("mcp").list_meetings(token)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)[:200]
+        conn.execute("UPDATE accounts SET sync_error=?, last_sync_at=? WHERE id=?",
+                     (msg, iso(now()), account_id))
+        result["error"] = msg
+        return result
+
+    upstream = {m["meeting_code"]: m for m in meetings if m["meeting_code"]}
+    pool_rows = conn.execute(
+        """SELECT id, meeting_code, status, upstream_state FROM bookings
+           WHERE account_id=? AND meeting_code!='' AND status IN ('pending','active','cancelled')""",
+        (account_id,),
+    ).fetchall()
+    pool_codes = {r["meeting_code"] for r in pool_rows}
+    stamp = iso(now())
+
+    for row in pool_rows:
+        if row["status"] == "cancelled":
+            if (row["upstream_state"] or "") == "started":
+                continue  # 已开始的会本来就不能取消，不算异常
+            if row["meeting_code"] in upstream:
+                conn.execute(
+                    """UPDATE bookings SET upstream_state='cancel_failed',
+                         cancel_error=COALESCE(NULLIF(cancel_error,''),'本地已取消，但腾讯会议里这场会仍然存在'),
+                         synced_at=? WHERE id=?""",
+                    (stamp, row["id"]),
+                )
+                result["cancel_failed"] += 1
+            else:
+                # 上游活动列表里已经没有它 → 确实取消了，顺手清掉历史误报
+                conn.execute(
+                    """UPDATE bookings SET upstream_state='cancelled', cancel_error='',
+                         fail_reason='', synced_at=? WHERE id=?""",
+                    (stamp, row["id"]),
+                )
+            continue
+        if row["meeting_code"] in upstream:
+            conn.execute(
+                "UPDATE bookings SET upstream_state='', cancel_error='', synced_at=? WHERE id=?",
+                (stamp, row["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE bookings SET upstream_state='missing', synced_at=? WHERE id=?",
+                (stamp, row["id"]),
+            )
+            result["missing"] += 1
+
+    conn.execute("DELETE FROM external_meetings WHERE account_id=?", (account_id,))
+    for meeting in meetings:
+        if meeting["meeting_code"] and meeting["meeting_code"] in pool_codes:
+            continue  # 号池自己开的会，已在 bookings 里
+        conn.execute(
+            """INSERT OR REPLACE INTO external_meetings
+               (account_id, meeting_code, meeting_id, subject, start_at, end_at, status, synced_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (account_id, meeting["meeting_code"], meeting["meeting_id"], meeting["subject"],
+             meeting["start_at"], meeting["end_at"], meeting["status"], stamp),
+        )
+        result["imported"] += 1
+
+    conn.execute(
+        "UPDATE accounts SET last_sync_at=?, sync_error='', external_count=? WHERE id=?",
+        (stamp, result["imported"], account_id),
+    )
+    audit(conn, "sync.account", actor, f"account:{account_id}",
+          f'{acc["label"]}: 外部 {result["imported"]}，丢失 {result["missing"]}，'
+          f'取消失败 {result["cancel_failed"]}', "")
+    return result
+
+
+def sync_all(actor: str = "system") -> dict:
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM accounts WHERE status='active' AND driver='mcp' ORDER BY id"
+        ).fetchall()
+        results = [sync_account(conn, r["id"], actor) for r in rows]
+        return {
+            "accounts": len(results),
+            "imported": sum(r["imported"] for r in results),
+            "missing": sum(r["missing"] for r in results),
+            "cancel_failed": sum(r["cancel_failed"] for r in results),
+            "errors": [{"label": r["label"], "error": r["error"]} for r in results if r["error"]
+                       and r["error"] != "非 MCP 账号，无需对账"],
+            "detail": results,
+        }
+    finally:
+        conn.close()
+
+
+def external_meetings(day: Optional[str] = None, account_id: Optional[int] = None) -> list[dict]:
+    conn = connect()
+    try:
+        sql = """SELECT e.*, a.label AS account_label FROM external_meetings e
+                 LEFT JOIN accounts a ON a.id=e.account_id WHERE 1=1"""
+        args: list[Any] = []
+        if day:
+            sql += " AND e.start_at>=? AND e.start_at<=?"
+            args += [f"{day}T00:00:00", f"{day}T23:59:59"]
+        if account_id:
+            sql += " AND e.account_id=?"
+            args.append(account_id)
+        sql += " ORDER BY e.start_at"
+        return [dict(r) for r in conn.execute(sql, tuple(args)).fetchall()]
+    finally:
+        conn.close()
+
+
+def problem_bookings() -> list[dict]:
+    """需要人处理的：上游取消没生效 / 会议凭空消失。"""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT b.*, a.label AS account_label FROM bookings b
+               LEFT JOIN accounts a ON a.id=b.account_id
+               WHERE b.upstream_state IN ('cancel_failed','missing')
+               ORDER BY b.start_at DESC LIMIT 50"""
+        ).fetchall()
+        return [attach_share(booking_row(r, r["account_label"] or "")) for r in rows]
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- 分配
 
 
@@ -304,9 +459,21 @@ TIER_RANK = {"free": 1, "pro": 2, "biz": 3}
 def _candidates(conn: sqlite3.Connection, start: datetime, end: datetime,
                 duration: int, cfg: dict) -> list[tuple[dict, str]]:
     rows = conn.execute("SELECT * FROM accounts WHERE status='active'").fetchall()
+    # 上游已有会议（号主自己在 App 里约的）同样算占用，否则会撞车
+    lo = (start - timedelta(minutes=cfg["buffer_minutes"])).isoformat(timespec="seconds")
+    hi = (end + timedelta(minutes=cfg["buffer_minutes"])).isoformat(timespec="seconds")
+    external: dict[int, list[sqlite3.Row]] = {}
+    for row in conn.execute(
+        "SELECT account_id, start_at, end_at, subject FROM external_meetings WHERE start_at < ? AND end_at > ?",
+        (hi, lo),
+    ):
+        external.setdefault(row["account_id"], []).append(row)
+
     picked: list[tuple[dict, str]] = []
     for row in rows:
         acc = account_row(row)
+        if external.get(acc["id"]):
+            continue
         token = decrypt_secret(row["token_cipher"]) if row["token_cipher"] else ""
         driver = get_driver(acc["driver"])
         ok, reason = driver.ready(acc, token)
@@ -502,8 +669,54 @@ def list_my_bookings(tokens: list[str]) -> list[dict]:
         conn.close()
 
 
+def _cancel_upstream(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, str, str]:
+    """在腾讯会议侧真取消。返回 (是否已了结, 给人看的说明, 上游状态)。
+
+    第三个值：``cancelled`` 上游已取消 / ``started`` 会议已开始（腾讯不允许取消）/
+    ``none`` 无需上游操作 / ``""`` 失败了。
+    """
+    acc_row = conn.execute("SELECT * FROM accounts WHERE id=?", (row["account_id"],)).fetchone()
+    if not acc_row:
+        return True, "", "none"
+    if acc_row["driver"] != "mcp":
+        return True, "", "none"  # 固定号/演示号没有可取消的上游对象
+    if (row["upstream_state"] or "") == "missing":
+        return True, "", "none"  # 上游早就没有这场会了
+    if not (row["meeting_code"] or row["meeting_id"]):
+        return True, "", "none"
+
+    # 腾讯会议不允许取消已经开始的会议：这时唯一正确的做法是「结束会议」（主持人在会里操作）
+    started_note = "会议已经开始，腾讯会议不允许取消；号码已释放，请在会议里点「结束会议」"
+    try:
+        if parse_dt(row["start_at"]) <= now():
+            return True, started_note, "started"
+    except ValueError:
+        pass
+
+    if not acc_row["token_cipher"]:
+        return False, "账号未绑定 Token，无法在腾讯会议侧取消", ""
+    try:
+        get_driver("mcp").cancel(
+            account_row(acc_row),
+            decrypt_secret(acc_row["token_cipher"]),
+            dict(row),
+        )
+        return True, "腾讯会议侧已取消", "cancelled"
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)[:200]
+        if "已开始" in msg or "已经开始" in msg:
+            return True, started_note, "started"
+        return False, msg, ""
+
+
 def cancel_booking(booking_id: int, token: Optional[str] = None, actor: str = "",
-                   ip: str = "", call_upstream: bool = True) -> dict:
+                   ip: str = "", force: bool = False) -> dict:
+    """取消预约。
+
+    默认「上游成功才算成功」：腾讯会议侧没取消掉，就不动本地状态，把原因抛给调用方。
+    ``force=True`` 时允许本地强制释放，但会记录 ``upstream_state='cancel_failed'``，
+    后续可以重试，不会让这场会凭空消失。
+    """
     conn = connect()
     try:
         row = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
@@ -513,21 +726,68 @@ def cancel_booking(booking_id: int, token: Optional[str] = None, actor: str = ""
             raise PermissionError("管理口令不匹配")
         if row["status"] in {"cancelled", "done", "failed"}:
             raise ValueError("该预约已经结束了，无需取消")
-        acc_row = conn.execute("SELECT * FROM accounts WHERE id=?", (row["account_id"],)).fetchone()
-        note = ""
-        if call_upstream and acc_row and row["meeting_code"] and acc_row["driver"] == "mcp" and acc_row["token_cipher"]:
-            try:
-                driver = get_driver("mcp")
-                driver.cancel(account_row(acc_row), decrypt_secret(acc_row["token_cipher"]), dict(row))
-            except Exception as exc:  # noqa: BLE001
-                note = f"上游取消失败（本地已释放）：{exc}"[:180]
+
+        ok, note, state = _cancel_upstream(conn, row)
+        if ok:
+            if state == "cancelled":
+                note = "腾讯会议侧已取消（App 里会留一条「已取消」记录，属正常，不是还在开）"
+            conn.execute(
+                """UPDATE bookings SET status='cancelled', upstream_state=?,
+                     cancel_error=?, fail_reason='', updated_at=? WHERE id=?""",
+                (state or "none", note if state == "started" else "", iso(now()), booking_id),
+            )
+            audit(conn, "booking.cancel", actor or row["requester"], f"booking:{booking_id}",
+                  note or "已取消", ip)
+            return {"id": booking_id, "status": "cancelled", "note": note or "已取消"}
+
+        # 上游没取消掉
+        error = note
         conn.execute(
-            "UPDATE bookings SET status='cancelled', updated_at=?, fail_reason=? WHERE id=?",
-            (iso(now()), note, booking_id),
+            """UPDATE bookings SET upstream_state='cancel_failed', cancel_error=?, updated_at=?
+               WHERE id=?""",
+            (error, iso(now()), booking_id),
         )
-        audit(conn, "booking.cancel", actor or row["requester"], f"booking:{booking_id}",
-              note[:160], ip)
-        return {"id": booking_id, "status": "cancelled", "note": note}
+        audit(conn, "booking.cancel.fail", actor or row["requester"], f"booking:{booking_id}",
+              error[:160], ip)
+        if not force:
+            raise ValueError(
+                f"腾讯会议侧没取消成功：{error}。这场会仍然有效，号码没有释放。"
+                f"可以稍后重试，或让管理员强制释放。"
+            )
+        conn.execute(
+            """UPDATE bookings SET status='cancelled', fail_reason=?, updated_at=? WHERE id=?""",
+            (f"强制释放，上游未取消：{error}"[:200], iso(now()), booking_id),
+        )
+        audit(conn, "booking.cancel.force", actor or row["requester"], f"booking:{booking_id}",
+              error[:160], ip)
+        return {"id": booking_id, "status": "cancelled", "forced": True,
+                "note": f"已强制释放，但腾讯会议里这场会还在：{error}"}
+    finally:
+        conn.close()
+
+
+def retry_cancel(booking_id: int, actor: str = "", ip: str = "") -> dict:
+    """对「本地已取消、上游还活着」的预约再试一次真实取消。"""
+    conn = connect()
+    try:
+        row = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()
+        if not row:
+            raise ValueError("预约不存在")
+        ok, error, _state = _cancel_upstream(conn, row)
+        if not ok:
+            conn.execute(
+                "UPDATE bookings SET upstream_state='cancel_failed', cancel_error=? WHERE id=?",
+                (error, booking_id),
+            )
+            audit(conn, "booking.cancel.retry.fail", actor, f"booking:{booking_id}", error[:160], ip)
+            raise ValueError(f"仍未成功：{error}")
+        conn.execute(
+            """UPDATE bookings SET status='cancelled', upstream_state='cancelled',
+                 cancel_error='', fail_reason='', updated_at=? WHERE id=?""",
+            (iso(now()), booking_id),
+        )
+        audit(conn, "booking.cancel.retry", actor, f"booking:{booking_id}", "已取消", ip)
+        return {"id": booking_id, "status": "cancelled", "note": "腾讯会议侧已取消"}
     finally:
         conn.close()
 
@@ -607,7 +867,26 @@ def day_timeline(day: Optional[str] = None) -> dict:
                 "start_at": r["start_at"],
                 "end_at": r["end_at"],
                 "status": r["status"],
+                "source": "pool",
             })
+        # 上游已有会议：号主自己在 App 里约的，也要让人看见
+        ext_rows = conn.execute(
+            """SELECT * FROM external_meetings
+               WHERE start_at>=? AND start_at<=? ORDER BY start_at""",
+            (f"{target.isoformat()}T00:00:00", f"{target.isoformat()}T23:59:59"),
+        ).fetchall()
+        for r in ext_rows:
+            blocks.setdefault(r["account_id"], []).append({
+                "id": f"ext-{r['id']}",
+                "subject": r["subject"],
+                "requester": r["status"] or "上游已约",
+                "start_at": r["start_at"],
+                "end_at": r["end_at"],
+                "status": "external",
+                "source": "external",
+            })
+        for items in blocks.values():
+            items.sort(key=lambda x: x["start_at"])
         return {
             "date": target.isoformat(),
             "accounts": [
@@ -691,6 +970,24 @@ def admin_overview() -> dict:
                 key=lambda x: -x["week_count"],
             )[:12],
             "upcoming": [attach_share(booking_row(r, r["account_label"] or "")) for r in upcoming],
+            "problems": [attach_share(booking_row(r, r["account_label"] or ""))
+                         for r in conn.execute(
+                             """SELECT b.*, a.label AS account_label FROM bookings b
+                                LEFT JOIN accounts a ON a.id=b.account_id
+                                WHERE b.upstream_state IN ('cancel_failed','missing')
+                                ORDER BY b.start_at DESC LIMIT 20""").fetchall()],
+            "external_total": scalar("SELECT COUNT(*) FROM external_meetings"),
+            "external_upcoming": [dict(r) for r in conn.execute(
+                """SELECT e.*, a.label AS account_label FROM external_meetings e
+                   LEFT JOIN accounts a ON a.id=e.account_id
+                   WHERE e.end_at>=? ORDER BY e.start_at LIMIT 8""",
+                (current.isoformat(timespec="seconds"),),
+            ).fetchall()],
+            "sync": {
+                "last_sync_at": max([a["last_sync_at"] for a in accounts if a["last_sync_at"]] or [""]),
+                "errors": [{"label": a["label"], "error": a["sync_error"]}
+                           for a in accounts if a["sync_error"]],
+            },
             "config": cfg,
             "server_time": iso(current),
         }

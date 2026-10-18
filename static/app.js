@@ -182,22 +182,34 @@
   }
 
   async function cancelMyBooking(id, token, fromResult) {
-    const ok = await confirmDialog('结束这场会？', '结束后会议号会立即回池，其他人马上可以借到。');
+    const ok = await confirmDialog('结束这场会？', '会同时在腾讯会议里取消这场会，取消成功后号码立即回池。');
     if (!ok) return;
     try {
-      await api(`/api/bookings/${id}/cancel`, {
+      const res = await api(`/api/bookings/${id}/cancel`, {
         method: 'POST',
         body: JSON.stringify({ token }),
       });
-      toast('已结束，号已回池');
+      toast(res.note || '已取消，号已回池', 3000);
       if (fromResult) {
         $('#result-card').innerHTML = `
           <div class="result-empty"><div class="empty-icon">✓</div>
-          <h3>这场会已结束</h3><p>会议号回到了号池，同事现在可以借到了。</p></div>`;
+          <h3>这场会已取消</h3><p>腾讯会议里也一并取消了，号码回到了号池。</p></div>`;
       }
       await Promise.all([loadState(), loadTimeline(), loadMy()]);
     } catch (e) {
-      toast(e.message);
+      toast(e.message, 7000);
+      if (fromResult) {
+        const live = $('#result-card').querySelector('.result-live');
+        if (live) {
+          let note = live.querySelector('.cancel-error');
+          if (!note) {
+            note = document.createElement('div');
+            note.className = 'cancel-error';
+            live.appendChild(note);
+          }
+          note.textContent = e.message;
+        }
+      }
     }
   }
 
@@ -250,8 +262,13 @@
       const to = ((e.getHours() + e.getMinutes() / 60) - startH) / span;
       const left = Math.max(0, Math.min(1, from)) * 100;
       const width = Math.max(2.5, Math.min(1, Math.max(0, to)) * 100 - left);
-      const cls = b.status === 'active' ? 'active' : (b.status === 'done' ? 'done' : '');
-      return `<div class="tl-block ${cls}" style="left:${left}%;width:${width}%" title="${esc(b.subject)} · ${esc(b.requester)} · ${esc(fmtRange(b.start_at, b.end_at))}">${esc(b.subject)}</div>`;
+      let cls = '';
+      if (b.source === 'external') cls = 'external';
+      else if (b.status === 'active') cls = 'active';
+      else if (b.status === 'done') cls = 'done';
+      const tip = `${b.subject} · ${b.source === 'external' ? '上游已约' : b.requester} · ${fmtRange(b.start_at, b.end_at)}`;
+      const label = b.source === 'external' ? `上游 · ${b.subject}` : b.subject;
+      return `<div class="tl-block ${cls}" style="left:${left}%;width:${width}%" title="${esc(tip)}">${esc(label)}</div>`;
     }).join('');
 
     if (!data.accounts.length) {
@@ -382,13 +399,21 @@
     ]);
     state.accounts = accounts.items;
     renderAdminStats(overview);
+    renderProblems(overview.problems || []);
     renderAccounts(accounts.items);
     renderBookings(bookings.items);
     renderCharts(overview);
     renderConfig(cfg);
     renderAudit(audit.items);
+    const syncAt = overview.sync && overview.sync.last_sync_at
+      ? overview.sync.last_sync_at.slice(5, 16).replace('T', ' ')
+      : '还没对账';
+    const syncErr = overview.sync && overview.sync.errors.length
+      ? ` · ${overview.sync.errors.length} 个号对账失败` : '';
     $('#admin-sub').textContent =
-      `${overview.accounts_total} 个账号 · 今日 ${overview.today_bookings} 场 / ${Math.round(overview.today_minutes / 60 * 10) / 10} 小时 · 近 7 天失败率 ${overview.failure_rate}%`;
+      `${overview.accounts_total} 个账号 · 今日 ${overview.today_bookings} 场 / `
+      + `${Math.round(overview.today_minutes / 60 * 10) / 10} 小时 · 近 7 天失败率 `
+      + `${overview.failure_rate}% · 上游另有 ${overview.external_total} 场 · 上次对账 ${syncAt}${syncErr}`;
   }
 
   function bookingQuery() {
@@ -414,6 +439,61 @@
   const TIER_TEXT = { free: '免费版', pro: '专业版', biz: '商业版' };
   const HEALTH_TEXT = { ok: '正常', warn: '异常', bad: '不可用', unknown: '未检测' };
 
+  function renderProblems(items) {
+    const box = $('#admin-problems');
+    if (!items.length) { box.innerHTML = ''; return; }
+    const rows = items.map((p) => {
+      const isCancelFail = p.upstream_state === 'cancel_failed';
+      const note = isCancelFail
+        ? (p.cancel_error || '本地已取消，但腾讯会议里这场会仍然存在')
+        : '腾讯会议里已经找不到这场会了，号码还占着';
+      return `<div class="problem-row">
+        <div>
+          <div class="cell-main">${esc(p.subject)} <span class="muted small">#${p.id}</span>
+            <span class="pill ${isCancelFail ? 'red' : 'amber'}">${isCancelFail ? '取消失败' : '会议已消失'}</span></div>
+          <div class="cell-sub">${esc(fmtRange(p.start_at, p.end_at))} · ${esc(p.account_label || '')} · ${esc(note)}</div>
+        </div>
+        <div class="row-actions">
+          ${isCancelFail
+            ? `<button class="btn tiny" data-retry="${p.id}">重新取消</button>`
+            : `<button class="btn tiny" data-release="${p.id}">结束并释放</button>`}
+        </div>
+      </div>`;
+    }).join('');
+    box.innerHTML = `<div class="problem-card">
+      <div class="problem-head"><b>${items.length} 条跟腾讯会议对不上</b>
+        <span class="muted small">本地记录和上游状态不一致，处理完会消失</span></div>
+      ${rows}</div>`;
+
+    $$('[data-retry]', box).forEach((btn) => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = '取消中…';
+        try {
+          await api(`/api/admin/bookings/${btn.dataset.retry}/retry-cancel`, { method: 'POST' });
+          toast('这次真的取消了');
+          await loadAdmin();
+        } catch (e) {
+          toast(e.message, 6000);
+          btn.disabled = false;
+          btn.textContent = '重新取消';
+        }
+      };
+    });
+    $$('[data-release]', box).forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/admin/bookings/${btn.dataset.release}/cancel`, {
+            method: 'POST', body: JSON.stringify({ force: true }),
+          });
+          toast('号码已释放');
+          await loadAdmin();
+          await loadTimeline();
+        } catch (e) { toast(e.message, 5000); }
+      };
+    });
+  }
+
   function renderAccounts(items) {
     const tbody = $('#accounts-table tbody');
     if (!items.length) {
@@ -436,9 +516,12 @@
         <td>${esc(DRIVER_TEXT[a.driver] || a.driver)}</td>
         <td>${credential}</td>
         <td>${a.today_count} / ${a.week_count} 次<div class="cell-sub">${Math.round(a.week_minutes / 60 * 10) / 10} 小时</div></td>
-        <td>${statusPillHtml}${a.busy_now ? '<div class="cell-sub">使用中</div>' : ''}</td>
+        <td>${statusPillHtml}${a.busy_now ? '<div class="cell-sub">使用中</div>' : ''}
+          ${a.external_count ? `<div class="cell-sub">上游 ${a.external_count} 场</div>` : ''}</td>
         <td><span class="dot ${esc(a.health)}"></span>${esc(HEALTH_TEXT[a.health] || a.health)}
-          ${a.health_note ? `<div class="cell-sub" title="${esc(a.health_note)}">${esc(a.health_note.slice(0, 22))}</div>` : ''}</td>
+          ${a.health_note ? `<div class="cell-sub" title="${esc(a.health_note)}">${esc(a.health_note.slice(0, 22))}</div>` : ''}
+          ${a.sync_error ? `<div class="cell-sub" title="${esc(a.sync_error)}" style="color:var(--amber)">对账失败</div>` : ''}
+          ${a.last_sync_at ? `<div class="cell-sub">同步 ${esc(a.last_sync_at.slice(5, 16).replace('T', ' '))}</div>` : ''}</td>
         <td><div class="row-actions">
           <button class="btn ghost tiny" data-probe="${a.id}" title="检测 Token 是否可用">检测</button>
           <button class="btn ghost tiny" data-edit="${a.id}">编辑</button>
@@ -477,12 +560,33 @@
 
     $$('[data-bcancel]', tbody).forEach((b) => {
       b.onclick = async () => {
-        if (!await confirmDialog('强制结束这场会？', '会同时在腾讯会议侧取消（MCP 账号），并立即释放号码。', '结束')) return;
+        if (!await confirmDialog('结束这场会？', '会同时在腾讯会议侧取消（MCP 账号），并立即释放号码。', '结束')) return;
         try {
           await api(`/api/admin/bookings/${b.dataset.bcancel}/cancel`, { method: 'POST' });
-          toast('已结束并释放');
+          toast('已在腾讯会议侧取消并释放');
           await loadAdmin();
-        } catch (e) { toast(e.message); }
+          await loadTimeline();
+        } catch (e) {
+          if (e.status === 409 && /取消|上游/.test(e.message)) {
+            const force = await confirmDialog(
+              '腾讯会议侧取消失败',
+              `${e.message}\n\n要强制在号池里释放这个号码吗？会议仍会留在腾讯会议上。`,
+              '强制释放',
+            );
+            if (force) {
+              try {
+                await api(`/api/admin/bookings/${b.dataset.bcancel}/cancel`, {
+                  method: 'POST', body: JSON.stringify({ force: true }),
+                });
+                toast('已强制释放，会议仍在腾讯会议侧', 4000);
+                await loadAdmin();
+                await loadTimeline();
+              } catch (err) { toast(err.message, 5000); }
+            }
+          } else {
+            toast(e.message, 6000);
+          }
+        }
       };
     });
   }
@@ -784,6 +888,28 @@
     };
     $('#btn-add-account').onclick = () => openAccountModal(null);
     $('#btn-diag').onclick = openDiagnoseModal;
+    $('#btn-sync').onclick = async (e) => {
+      const btn = e.currentTarget;
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '对账中…';
+      try {
+        const r = await api('/api/admin/sync', { method: 'POST' });
+        const parts = [`对账 ${r.accounts} 个号`, `上游新增 ${r.imported} 场`];
+        if (r.cancel_failed) parts.push(`${r.cancel_failed} 场取消失败`);
+        if (r.missing) parts.push(`${r.missing} 场上游已消失`);
+        toast(parts.join(' · '), 4000);
+        if (r.errors && r.errors.length) {
+          toast(`有 ${r.errors.length} 个号对账失败：${r.errors[0].label} ${r.errors[0].error}`, 6000);
+        }
+        await Promise.all([loadAdmin(), loadState(), loadTimeline()]);
+      } catch (err) {
+        toast(err.message, 6000);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    };
     $('#btn-refresh').onclick = () => loadAdmin().then(() => toast('已刷新'));
     $('#btn-export').onclick = () => {
       const d = $('#filter-date').value;

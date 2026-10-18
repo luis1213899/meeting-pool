@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     health        TEXT    NOT NULL DEFAULT 'unknown',  -- ok / warn / bad / unknown
     health_note   TEXT    NOT NULL DEFAULT '',
     checked_at    TEXT    NOT NULL DEFAULT '',
+    last_sync_at  TEXT    NOT NULL DEFAULT '',
+    sync_error    TEXT    NOT NULL DEFAULT '',
+    external_count INTEGER NOT NULL DEFAULT 0,
     note          TEXT    NOT NULL DEFAULT '',
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL
@@ -48,6 +51,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     password     TEXT    NOT NULL DEFAULT '',
     host_key     TEXT    NOT NULL DEFAULT '',
     driver       TEXT    NOT NULL DEFAULT '',
+    upstream_state TEXT  NOT NULL DEFAULT '',      -- '' | cancelled | cancel_failed | missing
+    cancel_error TEXT    NOT NULL DEFAULT '',
+    synced_at    TEXT    NOT NULL DEFAULT '',
     manage_token TEXT    NOT NULL,
     fail_reason  TEXT    NOT NULL DEFAULT '',
     raw          TEXT    NOT NULL DEFAULT '',
@@ -58,6 +64,23 @@ CREATE TABLE IF NOT EXISTS bookings (
 
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON bookings(account_id, start_at, end_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status, start_at);
+
+-- 从腾讯会议拉回来的、非号池创建的会议（号主自己在 App 里约的）
+CREATE TABLE IF NOT EXISTS external_meetings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id   INTEGER NOT NULL,
+    meeting_code TEXT    NOT NULL DEFAULT '',
+    meeting_id   TEXT    NOT NULL DEFAULT '',
+    subject      TEXT    NOT NULL DEFAULT '',
+    start_at     TEXT    NOT NULL,
+    end_at       TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT '',
+    synced_at    TEXT    NOT NULL,
+    UNIQUE(account_id, meeting_id, start_at),
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_slot ON external_meetings(account_id, start_at, end_at);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +106,7 @@ DEFAULT_SETTINGS = {
     "max_minutes": "240",        # 单场最长时长（小时级会议请走正式流程）
     "work_hour_start": "8",
     "work_hour_end": "23",
+    "sync_minutes": "10",        # 自动跟腾讯会议对账的间隔（0 = 关闭）
     "notice": "用完请及时在「我的预约」里结束，方便同事接着用。",
 }
 
@@ -102,6 +126,14 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     wanted = {
         "bookings": {
             "host_key": "TEXT NOT NULL DEFAULT ''",
+            "upstream_state": "TEXT NOT NULL DEFAULT ''",
+            "cancel_error": "TEXT NOT NULL DEFAULT ''",
+            "synced_at": "TEXT NOT NULL DEFAULT ''",
+        },
+        "accounts": {
+            "last_sync_at": "TEXT NOT NULL DEFAULT ''",
+            "sync_error": "TEXT NOT NULL DEFAULT ''",
+            "external_count": "INTEGER NOT NULL DEFAULT 0",
         },
     }
     for table, columns in wanted.items():
@@ -132,7 +164,7 @@ def get_settings(conn: sqlite3.Connection) -> dict:
     raw = {r["k"]: r["v"] for r in rows}
     out = dict(raw)
     for key in ("buffer_minutes", "max_per_week", "window_days", "min_minutes", "max_minutes",
-                "work_hour_start", "work_hour_end"):
+                "work_hour_start", "work_hour_end", "sync_minutes"):
         try:
             out[key] = int(raw.get(key, DEFAULT_SETTINGS[key]))
         except (TypeError, ValueError):

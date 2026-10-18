@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -23,10 +24,19 @@ COOKIE = "pool_admin"
 
 
 async def _reaper() -> None:
-    """后台推进预约状态：到点开始、结束释放。"""
+    """后台推进预约状态，并按间隔跟腾讯会议对账（拉上游已有会议/核验取消）。"""
+    last_sync = time.time()  # 启动时不立刻对账，等一个间隔，避免拖慢启动
     while True:
         try:
-            service.reap()
+            await asyncio.to_thread(service.reap)
+            conn = connect()
+            try:
+                interval = int(get_settings(conn).get("sync_minutes") or 0) * 60
+            finally:
+                conn.close()
+            if interval and time.time() - last_sync >= interval:
+                last_sync = time.time()
+                await asyncio.to_thread(service.sync_all, "scheduler")
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(30)
@@ -35,11 +45,13 @@ async def _reaper() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    task = asyncio.create_task(_reaper())
+    # 测试或多实例调试时可关掉后台线程（POOL_DISABLE_SCHEDULER=1）
+    task = None if os.environ.get("POOL_DISABLE_SCHEDULER") == "1" else asyncio.create_task(_reaper())
     try:
         yield
     finally:
-        task.cancel()
+        if task:
+            task.cancel()
 
 
 app = FastAPI(title="会议号池", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
@@ -298,12 +310,42 @@ def admin_bookings(date: Optional[str] = None, status: Optional[str] = None,
 
 
 @app.post("/api/admin/bookings/{booking_id}/cancel")
-def admin_cancel_booking(booking_id: int, request: Request, username: str = Depends(require_admin)):
+async def admin_cancel_booking(booking_id: int, request: Request, username: str = Depends(require_admin)):
+    payload: dict = {}
+    if request.headers.get("content-length") not in (None, "0"):
+        payload = await _body(request)
     try:
         return service.cancel_booking(booking_id, token=None, actor=f"admin:{username}",
-                                      ip=_client_ip(request))
+                                      ip=_client_ip(request), force=bool(payload.get("force")))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/admin/bookings/{booking_id}/retry-cancel")
+def admin_retry_cancel(booking_id: int, request: Request, username: str = Depends(require_admin)):
+    try:
+        return service.retry_cancel(booking_id, actor=f"admin:{username}", ip=_client_ip(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/admin/sync")
+def admin_sync(username: str = Depends(require_admin)):
+    """立即跟腾讯会议对账：拉上游会议、核验取消是否真的生效。"""
+    try:
+        return service.sync_all(actor=f"admin:{username}")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"对账失败：{exc}") from None
+
+
+@app.get("/api/admin/external")
+def admin_external(date: Optional[str] = None, username: str = Depends(require_admin)):
+    return {"items": service.external_meetings(day=date)}
+
+
+@app.get("/api/admin/problems")
+def admin_problems(username: str = Depends(require_admin)):
+    return {"items": service.problem_bookings()}
 
 
 @app.get("/api/admin/audit")

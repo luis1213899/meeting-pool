@@ -145,6 +145,10 @@ class BaseDriver:
     def ready(self, account: dict, token: str) -> tuple[bool, str]:
         return True, ""
 
+    def list_meetings(self, token: str, **kwargs) -> list[dict]:
+        """上游已有会议（供对账）。非 MCP 模式没有这个概念。"""
+        return []
+
     def create(self, account: dict, token: str, payload: dict) -> MeetingResult:
         raise NotImplementedError
 
@@ -373,6 +377,56 @@ class McpDriver(BaseDriver):
         body = self._call(token, "get_meeting_by_code", {"meeting_code": code})
         return _dig(body, ("meeting_id", "meetingId"))
 
+    def list_meetings(self, token: str, page_size: int = 50, max_pages: int = 5) -> list[dict]:
+        """拉「未开始 / 进行中」的会议，自动翻页。只读，用来跟号池对账。"""
+        out: list[dict] = []
+        cursor = ""
+        for _ in range(max_pages):
+            args: dict[str, Any] = {
+                "page_size": page_size,
+                "is_show_all_sub_meetings": 1,
+                "timezone": "Asia/Shanghai",
+            }
+            if cursor:
+                args["page_token"] = cursor
+            body = self._call(token, SETTINGS.mcp_list_tool, args)
+            for item in body.get("meeting_info_list") or []:
+                if not isinstance(item, dict):
+                    continue
+                start = str(item.get("start_time") or "").strip()
+                end = str(item.get("end_time") or "").strip()
+                if not start or not end:
+                    continue
+                out.append({
+                    "meeting_code": str(item.get("meeting_code") or ""),
+                    "meeting_id": str(item.get("meeting_id") or ""),
+                    "subject": str(item.get("subject") or "未命名会议"),
+                    "start_at": start,
+                    "end_at": end,
+                    "status": str(item.get("status") or ""),
+                })
+            if not body.get("has_more"):
+                break
+            cursor = str(body.get("next_page_token") or "")
+            if not cursor:
+                break
+        return out
+
+    def _meeting_state(self, token: str, meeting_id: str) -> str:
+        """查会议当前状态；查不到（已被取消/删除）返回「已取消」。"""
+        try:
+            body = self._call(token, "get_meeting", {"meeting_id": meeting_id, "is_compact": True})
+        except DriverError as exc:
+            text = str(exc)
+            low = text.lower()
+            if "不存在" in text or "not found" in low or "已取消" in text or "取消" in text:
+                return "已取消"
+            return ""  # 判断不了就不阻断
+        info = body.get("meeting_info_list") or body
+        if isinstance(info, list) and info:
+            info = info[0]
+        return _dig(info, ("status", "meeting_status")) if isinstance(info, dict) else ""
+
     def cancel(self, account: dict, token: str, booking: dict) -> None:
         meeting_id = (booking.get("meeting_id") or "").strip()
         code = (booking.get("meeting_code") or "").strip()
@@ -382,8 +436,13 @@ class McpDriver(BaseDriver):
             except DriverError:
                 meeting_id = ""
         if not meeting_id:
-            raise DriverError("缺 meeting_id，无法在上游取消（本地已释放）")
+            raise DriverError("缺 meeting_id，无法在上游取消（可让管理员强制释放）")
         self._call(token, SETTINGS.mcp_cancel_tool, {"meeting_id": meeting_id})
+
+        # 核验：接口说成功不代表真取消了，回查一次状态
+        state = self._meeting_state(token, meeting_id)
+        if state and state not in ("已取消", "已结束", "cancelled", "canceled"):
+            raise DriverError(f"取消未生效：上游仍显示「{state}」")
 
     def probe(self, account: dict, token: str) -> tuple[str, str]:
         if not token:
