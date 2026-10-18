@@ -247,11 +247,10 @@ ssh your-server "python3 /opt/meeting-pool/deploy/patch_nginx.py"
 POOL_PORT=8099
 POOL_DB_PATH=/opt/meeting-pool/data/pool.db
 POOL_ADMIN_PASSWORD=...      # 管理后台口令
-POOL_ACCESS_CODE=...         # 员工端访问口令，留空=不设门禁
 POOL_MASTER_KEY=...          # 32 字节 base64，决定 Token 能否解密
 ```
 
-`POOL_ACCESS_CODE` 一旦设置，员工端先过口令页（cookie 30 天），管理接口不受影响。
+员工端不登录（内部工具，拿到链接就能借）；管理端走 `POOL_ADMIN_PASSWORD`。
 
 ### 放进工作台
 

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
-import hmac
 import os
 import time
 from collections import defaultdict, deque
@@ -12,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import service
@@ -102,88 +100,6 @@ async def _body(request: Request) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=400, detail="请求体必须是 JSON") from None
-
-
-# --------------------------------------------------------------------------- 访问口令
-
-ACCESS_COOKIE = "pool_access"
-
-GATE_HTML = """<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>会议号池 · 需要访问口令</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f6f8;
-       font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#16181d}
-  .box{background:#fff;border:1px solid #e6e9ef;border-radius:16px;padding:28px;width:100%;
-       max-width:360px;box-shadow:0 12px 40px -20px rgba(16,24,40,.35);text-align:center}
-  h1{font-size:18px;margin:0 0 6px}
-  p{color:#8a919f;font-size:13px;margin:0 0 18px}
-  input{width:100%;padding:10px 12px;border:1px solid #d7dce5;border-radius:9px;
-        font-size:15px;text-align:center;letter-spacing:.1em;outline:none}
-  input:focus{border-color:#0b5cff;box-shadow:0 0 0 3px rgba(11,92,255,.12)}
-  button{width:100%;margin-top:12px;padding:11px;border:0;border-radius:9px;background:#0b5cff;
-         color:#fff;font-size:15px;font-weight:600;cursor:pointer}
-  .err{color:#d93025;font-size:13px;margin-top:10px;min-height:18px}
-</style></head><body>
-  <div class="box">
-    <h1>会议号池</h1>
-    <p>输入团队口令后即可借用会议号</p>
-    <input id="code" autocomplete="off" inputmode="text" placeholder="团队口令" />
-    <button id="go">进入</button>
-    <div class="err" id="err"></div>
-  </div>
-<script>
-  const go = async () => {
-    const code = document.getElementById('code').value.trim();
-    const err = document.getElementById('err');
-    err.textContent = '';
-    if (!code) { err.textContent = '先输入口令'; return; }
-    const res = await fetch('api/access', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({code}),
-    });
-    if (res.ok) { location.reload(); } else {
-      const data = await res.json().catch(() => ({}));
-      err.textContent = data.detail || '口令不对';
-    }
-  };
-  document.getElementById('go').onclick = go;
-  document.getElementById('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  document.getElementById('code').focus();
-</script></body></html>"""
-
-
-def _access_digest() -> str:
-    return hmac.new(SETTINGS.session_secret.encode(), SETTINGS.access_code.encode(),
-                    hashlib.sha256).hexdigest()[:32]
-
-
-@app.middleware("http")
-async def access_gate(request: Request, call_next):
-    """设了 POOL_ACCESS_CODE 后，员工端需要口令；管理接口走自己的登录，不受影响。"""
-    if not SETTINGS.access_code:
-        return await call_next(request)
-    path = request.url.path
-    if path == "/healthz" or path == "/api/access" or path.startswith("/api/admin"):
-        return await call_next(request)
-    if hmac.compare_digest(request.cookies.get(ACCESS_COOKIE, ""), _access_digest()):
-        return await call_next(request)
-    if path.startswith("/api/"):
-        return JSONResponse({"detail": "需要访问口令，请刷新页面重新输入"}, status_code=401)
-    return HTMLResponse(GATE_HTML, status_code=401)
-
-
-@app.post("/api/access")
-async def grant_access(request: Request):
-    payload = await _body(request)
-    code = str(payload.get("code") or "").strip()
-    if not SETTINGS.access_code or not hmac.compare_digest(code, SETTINGS.access_code):
-        raise HTTPException(status_code=401, detail="口令不对，问一下管理员")
-    response = JSONResponse({"ok": True})
-    response.set_cookie(ACCESS_COOKIE, _access_digest(), httponly=True, samesite="lax",
-                        max_age=30 * 86400)
-    return response
 
 
 # --------------------------------------------------------------------------- 员工端
