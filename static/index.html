@@ -84,27 +84,35 @@
             <input name="note" maxlength="120" placeholder="比如：客户从外部加入" />
           </label>
 
-          <div class="options">
+          <div class="options" id="host-options">
             <div class="opt-head">主持人选项</div>
             <label class="switch-row">
               <span class="switch-text"><b>云录制</b><i>主持人入会后自动录制，方便回看</i></span>
               <input type="checkbox" name="record" checked />
               <span class="switch-ui" aria-hidden="true"></span>
             </label>
-            <label class="switch-row">
-              <span class="switch-text"><b>等候室</b><i>客人先在门外等，你放行后才进</i></span>
-              <input type="checkbox" name="waiting_room" />
-              <span class="switch-ui" aria-hidden="true"></span>
-            </label>
-            <label class="switch-row">
-              <span class="switch-text"><b>设置入会密码</b><i>默认不设，打开后填 4–6 位数字</i></span>
-              <input type="checkbox" name="password_enabled" />
-              <span class="switch-ui" aria-hidden="true"></span>
-            </label>
-            <label class="field password-field hidden" id="password-field">
-              <span>入会密码</span>
-              <input name="password" maxlength="6" inputmode="numeric" placeholder="4–6 位数字" />
-            </label>
+
+            <div class="opt-more" id="opt-more">
+              <label class="switch-row">
+                <span class="switch-text"><b>等候室</b><i>客人先在门外等，你放行后才进</i></span>
+                <input type="checkbox" name="waiting_room" />
+                <span class="switch-ui" aria-hidden="true"></span>
+              </label>
+              <label class="switch-row">
+                <span class="switch-text"><b>设置入会密码</b><i>默认不设，打开后填 4–6 位数字</i></span>
+                <input type="checkbox" name="password_enabled" />
+                <span class="switch-ui" aria-hidden="true"></span>
+              </label>
+              <label class="field password-field hidden" id="password-field">
+                <span>入会密码</span>
+                <input name="password" maxlength="6" inputmode="numeric" placeholder="4–6 位数字" />
+              </label>
+            </div>
+
+            <button class="opt-toggle" id="opt-toggle" type="button" aria-expanded="false" aria-controls="opt-more">
+              <span id="opt-toggle-text">更多选项（等候室 / 密码）</span>
+              <span class="chev" aria-hidden="true"></span>
+            </button>
           </div>
 
           <button class="btn primary block" type="submit" id="book-submit">借一个会议号</button>

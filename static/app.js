@@ -1064,6 +1064,13 @@
     });
 
     $('#book-form').addEventListener('submit', submitBooking);
+    $('#opt-toggle').onclick = () => {
+      const box = $('#host-options');
+      const open = box.classList.toggle('is-open');
+      $('#opt-toggle').setAttribute('aria-expanded', String(open));
+      $('#opt-toggle-text').textContent = open ? '收起更多选项' : '更多选项（等候室 / 密码）';
+    };
+
     $('#book-form').querySelector('[name=password_enabled]').addEventListener('change', (e) => {
       const field = $('#password-field');
       field.classList.toggle('hidden', !e.target.checked);

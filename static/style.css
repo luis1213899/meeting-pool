@@ -414,6 +414,20 @@ input::placeholder { color: #aab1bd; }
 .switch-row input:checked + .switch-ui::after { transform: translateX(17px); }
 .switch-row input:focus-visible + .switch-ui { outline: 2px solid var(--brand); outline-offset: 2px; }
 .password-field { margin: 4px 0 12px; }
+.opt-more .switch-row:first-of-type { border-top: 1px solid #f1f4f8; }
+
+/* 「更多选项」：桌面始终展开，手机默认收起 */
+.opt-toggle {
+  display: none; width: 100%; align-items: center; justify-content: center; gap: 6px;
+  padding: 11px 0; margin-top: 2px; border: 0; border-top: 1px solid #f1f4f8;
+  background: transparent; font-family: inherit; font-size: 12.5px; color: var(--brand);
+  cursor: pointer; font-weight: 600;
+}
+.opt-toggle .chev {
+  width: 7px; height: 7px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor;
+  transform: rotate(45deg) translateY(-2px); transition: transform .18s;
+}
+.options.is-open .opt-toggle .chev { transform: rotate(-135deg) translateY(-2px); }
 
 /* 移动端：甘特图横向滚动 + 色块不显示文字 */
 @media (max-width: 720px) {
@@ -437,6 +451,9 @@ input::placeholder { color: #aab1bd; }
   .tl-hint { display: block; margin-top: 8px; }
   .tl-axis { display: grid; margin-top: 8px; }
   .options { padding: 4px 12px; }
+  .opt-toggle { display: flex; }
+  .opt-more { display: none; }
+  .options.is-open .opt-more { display: block; }
 }
 
 /* ================= 排期甘特图 ================= */
