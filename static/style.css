@@ -648,3 +648,6 @@ input::placeholder { color: #aab1bd; }
 }
 
 @keyframes sheet-up { from { transform: translateY(18px); opacity: .6; } to { transform: none; opacity: 1; } }
+
+.hint .link { color: var(--brand); text-decoration: none; border-bottom: 1px dashed rgba(11,92,255,.4); }
+.hint .link:hover { border-bottom-style: solid; }

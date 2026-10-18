@@ -13,7 +13,6 @@
   const state = {
     cfg: {},
     admin: null,
-    tlDate: null,
     accounts: [],
     editing: null,
     driver: 'mcp',
@@ -139,26 +138,17 @@
     return d;
   }
 
-  function renderPublicStats(s) {
-    $('#public-stats').innerHTML = `
-      <div class="stat accent"><div class="k">当前空闲号</div><div class="v">${s.accounts_idle_now}<small>/ ${s.accounts_active} 个号</small></div></div>
-      <div class="stat"><div class="k">今日已借出</div><div class="v">${s.today_bookings}<small>场</small></div></div>
-      <div class="stat"><div class="k">单场最长</div><div class="v">${Math.round(s.max_minutes / 60 * 10) / 10}<small>小时</small></div></div>
-      <div class="stat"><div class="k">每人每周</div><div class="v">${s.max_per_week || '不限'}<small>次</small></div></div>`;
-    $('#form-note').textContent = s.notice || '';
-  }
 
   async function loadState() {
     const s = await api('/api/state');
     state.cfg = s;
-    renderPublicStats(s);
+    $('#form-note').textContent = s.notice || '';
     const d = defaultSlot();
     const form = $('#book-form');
     if (!form.dataset.touched) {
       form.date.value = isoDate(d);
       form.time.value = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
-    if (!state.tlDate) state.tlDate = isoDate(new Date());
     return s;
   }
 
@@ -215,7 +205,7 @@
           <h3>这场会已取消</h3><p>腾讯会议里也一并取消了，号码回到了号池。</p></div>`;
         rc.setAttribute('data-empty', '1');
       }
-      await Promise.all([loadState(), loadTimeline(), loadMy()]);
+      await Promise.all([loadState(), loadMy()]);
     } catch (e) {
       toast(e.message, 7000);
       if (fromResult) {
@@ -269,54 +259,6 @@
     }
   }
 
-  async function loadTimeline(date) {
-    if (date) state.tlDate = date;
-    const data = await api(`/api/timeline?date=${encodeURIComponent(state.tlDate)}`);
-    $('#tl-date').textContent = data.date;
-    const startH = Number(state.cfg.work_hour_start || 8);
-    const endH = Number(state.cfg.work_hour_end || 23);
-    const span = Math.max(1, endH - startH);
-    state.tlStartH = startH;
-    state.tlSpan = span;
-    state.tlBlocks = [];
-    const track = (blocks, accLabel) => blocks.map((b) => {
-      const s = new Date(b.start_at), e = new Date(b.end_at);
-      const from = ((s.getHours() + s.getMinutes() / 60) - startH) / span;
-      const to = ((e.getHours() + e.getMinutes() / 60) - startH) / span;
-      const left = Math.max(0, Math.min(1, from)) * 100;
-      const width = Math.max(1.6, Math.min(1, Math.max(0, to)) * 100 - left);
-      let cls = '';
-      if (b.source === 'external') cls = 'external';
-      else if (b.status === 'active') cls = 'active';
-      else if (b.status === 'done') cls = 'done';
-      const tip = `${b.subject} · ${b.source === 'external' ? '上游已约' : b.requester} · ${fmtRange(b.start_at, b.end_at)}`;
-      const label = b.source === 'external' ? `上游 · ${b.subject}` : b.subject;
-      const key = state.tlBlocks.push({ ...b, account: accLabel }) - 1;
-      return `<button type="button" class="tl-block ${cls}" data-block="${key}" style="left:${left}%;width:${width}%" title="${esc(tip)}" aria-label="${esc(tip)}">${esc(label)}</button>`;
-    }).join('');
-
-    if (!data.accounts.length) {
-      $('#timeline').innerHTML = '<p class="muted small">号池里还没有可用账号，去「号池管理」里加一个。</p>';
-      return;
-    }
-    $('#timeline').innerHTML = data.accounts.map((a) => `
-      <div class="tl-row">
-        <div class="tl-name" title="${esc(a.label)}">
-          <span class="dot ${esc(a.health || 'unknown')}"></span>${esc(a.label)}
-        </div>
-        <div class="tl-track" data-acc="${esc(a.label)}">${track(a.blocks, a.label)}</div>
-      </div>`).join('') + `
-      <div class="tl-axis"><div></div><div class="tl-ticks">
-        ${Array.from({ length: 6 }, (_, i) => {
-          const h = Math.round(startH + (span * i) / 5);
-          return `<span>${pad(h)}:00</span>`;
-        }).join('')}
-      </div></div>
-      <p class="tl-hint">左右滑动看全天，点色块看这个时段</p>`;
-  }
-
-
-
   /* ------------------------------------------------------------ 排期甘特图 */
 
   function hourOf(iso) {
@@ -332,7 +274,7 @@
 
   async function loadGantt(date) {
     if (date) state.ganttDate = date;
-    if (!state.ganttDate) state.ganttDate = state.tlDate || isoDate(new Date());
+    if (!state.ganttDate) state.ganttDate = isoDate(new Date());
     const data = await api(`/api/timeline?date=${encodeURIComponent(state.ganttDate)}`);
     state.ganttDate = data.date;
     $('#g-date').value = data.date;
@@ -447,7 +389,7 @@
     m.querySelector('[data-close]').onclick = () => closeModal(false);
     m.querySelector('[data-fill]').onclick = () => {
       const form = $('#book-form');
-      form.date.value = dateStr || state.tlDate;
+      form.date.value = dateStr || state.ganttDate || isoDate(new Date());
       form.time.value = `${pad(at.hour)}:${pad(at.minute)}`;
       form.dataset.touched = '1';
       closeModal(false);
@@ -494,7 +436,7 @@
       remember(booking);
       renderResult(booking);
       toast('号码到手，可以直接发群里了');
-      await Promise.all([loadState(), loadTimeline(), loadMy()]);
+      await Promise.all([loadState(), loadMy()]);
     } catch (e) {
       note.textContent = e.message;
       note.classList.add('err');
@@ -659,7 +601,6 @@
           });
           toast('号码已释放');
           await loadAdmin();
-          await loadTimeline();
         } catch (e) { toast(e.message, 5000); }
       };
     });
@@ -784,7 +725,6 @@
           await api(`/api/admin/bookings/${b.dataset.bcancel}/cancel`, { method: 'POST' });
           toast('已在腾讯会议侧取消并释放');
           await loadAdmin();
-          await loadTimeline();
         } catch (e) {
           if (e.status === 409 && /取消|上游/.test(e.message)) {
             const force = await confirmDialog(
@@ -799,8 +739,7 @@
                 });
                 toast('已强制释放，会议仍在腾讯会议侧', 4000);
                 await loadAdmin();
-                await loadTimeline();
-              } catch (err) { toast(err.message, 5000); }
+                    } catch (err) { toast(err.message, 5000); }
             }
           } else {
             toast(e.message, 6000);
@@ -980,7 +919,6 @@
         toast(acc ? '已保存' : '账号已加入号池');
         await loadAdmin();
         await loadState();
-        await loadTimeline();
       } catch (e) { toast(e.message, 3600); }
     };
   }
@@ -1081,59 +1019,6 @@
     });
     $('#my-refresh').onclick = () => loadMy().then(() => toast('已刷新'));
 
-    $('#timeline').addEventListener('click', (e) => {
-      const block = e.target.closest('.tl-block');
-      if (block) {
-        const data = state.tlBlocks[Number(block.dataset.block)];
-        if (data) slotSheet(data);
-        return;
-      }
-      const track = e.target.closest('.tl-track');
-      if (!track) return;
-      const rect = track.getBoundingClientRect();
-      if (!rect.width) return;
-      const ratio = (e.clientX - rect.left) / rect.width;
-      const hourFloat = state.tlStartH + ratio * state.tlSpan;
-      const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
-      freeSlotSheet(track.dataset.acc || '这个号', { hour: Math.floor(total / 60), minute: total % 60 }, state.tlDate);
-    });
-
-    $('#tl-full').onclick = () => switchView('gantt');
-
-    $('#g-prev').onclick = () => loadGantt(shiftDay(state.ganttDate, -1));
-    $('#g-next').onclick = () => loadGantt(shiftDay(state.ganttDate, 1));
-    $('#g-today').onclick = () => loadGantt(isoDate(new Date()));
-    $('#g-date').onchange = (e) => { if (e.target.value) loadGantt(e.target.value); };
-    $('#gantt').addEventListener('click', (e) => {
-      const block = e.target.closest('.g-block');
-      if (block) {
-        const data = state.ganttBlocks[Number(block.dataset.gkey)];
-        if (data) slotSheet(data);
-        return;
-      }
-      const track = e.target.closest('.g-track');
-      if (!track) return;
-      const rect = track.getBoundingClientRect();
-      if (!rect.width) return;
-      const ratio = (e.clientX - rect.left) / rect.width;
-      const hourFloat = state.gStartH + ratio * state.gSpan;
-      const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
-      freeSlotSheet(track.dataset.acc || '这个号',
-                    { hour: Math.floor(total / 60), minute: total % 60 },
-                    state.ganttDate);
-    });
-
-    $('#tl-prev').onclick = () => {
-      const d = new Date(state.tlDate + 'T12:00:00');
-      d.setDate(d.getDate() - 1);
-      loadTimeline(isoDate(d));
-    };
-    $('#tl-next').onclick = () => {
-      const d = new Date(state.tlDate + 'T12:00:00');
-      d.setDate(d.getDate() + 1);
-      loadTimeline(isoDate(d));
-    };
-
     $('#login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = e.target;
@@ -1175,7 +1060,7 @@
         if (r.errors && r.errors.length) {
           toast(`有 ${r.errors.length} 个号对账失败：${r.errors[0].label} ${r.errors[0].error}`, 6000);
         }
-        await Promise.all([loadAdmin(), loadState(), loadTimeline()]);
+        await Promise.all([loadAdmin(), loadState()]);
       } catch (err) {
         toast(err.message, 6000);
       } finally {
@@ -1232,7 +1117,6 @@
     $('#foot-time').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
     try {
       await loadState();
-      await loadTimeline();
       await loadMy();
     } catch (e) {
       toast(`加载失败：${e.message}`, 3600);
