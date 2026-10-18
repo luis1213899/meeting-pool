@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
@@ -12,8 +13,9 @@ import subprocess
 import sys
 import time
 
-CONF = pathlib.Path("/etc/nginx/conf.d/relay-production.conf")
-BLOCK = pathlib.Path("/opt/meeting-pool/deploy/nginx-location.conf")
+CONF = pathlib.Path(os.environ.get("NGINX_CONF", "/etc/nginx/conf.d/site.conf"))
+BLOCK = pathlib.Path(os.environ.get(
+    "POOL_NGINX_BLOCK", pathlib.Path(__file__).with_name("nginx-location.conf")))
 PROXY_MARK = "proxy_pass http://127.0.0.1:8099/"
 
 OLD_API = re.compile(r"\n[ \t]*location \^~ /tenxunhuiyiyuding/api/ \{.*?\n[ \t]*\}\n", re.S)
@@ -22,7 +24,7 @@ OLD_PAGE = re.compile(r"\n[ \t]*location \^~ /tenxunhuiyiyuding/ \{.*?\n[ \t]*\}
 
 def main() -> int:
     text = CONF.read_text(encoding="utf-8")
-    if PROXY_MARK in text and "alias /var/www/relay-landing/tenxunhuiyiyuding/" not in text:
+    if PROXY_MARK in text:
         print("已经是号池路由，无需修改")
         return 0
 

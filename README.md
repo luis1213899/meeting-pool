@@ -243,16 +243,18 @@ POOL_MCP_ARGS={"subject":"{subject}","start_time":"{start}","end_time":"{end}","
 
 ## 七、部署到服务器
 
-### 本仓库的实际线上形态（LoveVPS）
+### 示例部署形态
+
+> 下面是这套系统跑起来的最小拓扑。域名、路径、端口都是占位示例，换成你自己的即可。
 
 | 项目 | 值 |
 | --- | --- |
 | 代码目录 | `/opt/meeting-pool/`（虚拟环境 `.venv/`，数据 `data/pool.db`） |
 | 服务 | `meeting-pool.service` → `127.0.0.1:8099` |
 | 公网入口 | `https://your-domain.com/tenxunhuiyiyuding/`（nginx 反代并剥前缀） |
-| 旧形态 | 同路径的静态「腾讯会议预约」页 + `tenxunhuiyiyuding.service`（18084），2026-10-18 已替换并删除 |
+| 可替换的旧形态 | 同路径原本是静态「腾讯会议预约」页 + 一个独立小后端；换成号池时旧服务停用、目录删除即可 |
 
-部署资产都在 `deploy/`：
+部署资产都在 `deploy/`，里面的路径和端口是示例值，按你的环境改：
 
 ```bash
 # 1) 上传（排除数据与密钥）

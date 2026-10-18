@@ -1,3 +1,4 @@
+# 示例单元：把 /opt/meeting-pool 和 User 换成你自己的
 [Unit]
 Description=Meeting Pool (Tencent Meeting account pool)
 After=network-online.target
