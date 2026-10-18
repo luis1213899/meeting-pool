@@ -215,41 +215,81 @@ POOL_MCP_ARGS={"subject":"{subject}","start_time":"{start}","end_time":"{end}","
 
 ## 七、部署到服务器
 
-systemd 单元（示例）：
+### 本仓库的实际线上形态（LoveVPS）
+
+| 项目 | 值 |
+| --- | --- |
+| 代码目录 | `/opt/meeting-pool/`（虚拟环境 `.venv/`，数据 `data/pool.db`） |
+| 服务 | `meeting-pool.service` → `127.0.0.1:8099` |
+| 公网入口 | `https://your-domain.com/tenxunhuiyiyuding/`（nginx 反代并剥前缀） |
+| 旧形态 | 同路径的静态「腾讯会议预约」页 + `tenxunhuiyiyuding.service`（18084），2026-10-18 已替换并删除 |
+
+部署资产都在 `deploy/`：
+
+```bash
+# 1) 上传（排除数据与密钥）
+tar -czf - --exclude=./data --exclude=./.env --exclude=./.venv --exclude=./output . \
+  | ssh your-server "tar xzf - -C /opt/meeting-pool"
+
+# 2) 依赖
+ssh your-server "cd /opt/meeting-pool && .venv/bin/pip install -q -r requirements.txt"
+
+# 3) 重启
+ssh your-server "systemctl restart meeting-pool && systemctl is-active meeting-pool"
+
+# 4) nginx 路由（幂等，自带备份与 nginx -t 失败回滚）
+ssh your-server "python3 /opt/meeting-pool/deploy/patch_nginx.py"
+```
+
+关键环境变量（`.env`，权限 600，属主必须是运行服务的用户）：
+
+```ini
+POOL_PORT=8099
+POOL_DB_PATH=/opt/meeting-pool/data/pool.db
+POOL_ADMIN_PASSWORD=...      # 管理后台口令
+POOL_ACCESS_CODE=...         # 员工端访问口令，留空=不设门禁
+POOL_MASTER_KEY=...          # 32 字节 base64，决定 Token 能否解密
+```
+
+`POOL_ACCESS_CODE` 一旦设置，员工端先过口令页（cookie 30 天），管理接口不受影响。
+
+### 放进工作台
+
+`deploy/meeting-pool-entry.js` 会在运行时往侧栏「聊天」组和概览页快捷入口各加一项「会议号池」。
+选择注入而不是改 React 源码，是因为线上 bundle 与本地源码不同源，重建会把未发布的改动带上线。
+撤掉它只需要删掉 `relay-landing/index.html` 里那一行 `<script src="/relay-assets/meeting-pool-entry.js">`。
+
+### 通用 systemd / nginx 示例
 
 ```ini
 [Unit]
 Description=Meeting Pool
-After=network.target
+After=network-online.target
 
 [Service]
 Type=simple
+User=meeting
 WorkingDirectory=/opt/meeting-pool
-ExecStart=/usr/bin/python3 app.py
-Restart=always
-Environment=POOL_HOST=127.0.0.1
-Environment=POOL_PORT=8099
-# 口令与主密钥建议放 EnvironmentFile，权限 600
 EnvironmentFile=/opt/meeting-pool/.env
-User=www-data
+ExecStart=/opt/meeting-pool/.venv/bin/python app.py
+Restart=always
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Nginx：
-
 ```nginx
-server {
-    listen 443 ssl http2;
-    server_name meeting.your-domain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8099;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+location = /tenxunhuiyiyuding { return 302 /tenxunhuiyiyuding/; }
+location ^~ /tenxunhuiyiyuding/ {
+    proxy_pass http://127.0.0.1:8099/;   # 末尾斜杠负责剥前缀
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    add_header Cache-Control "no-store" always;
 }
 ```
 

@@ -175,3 +175,17 @@ def test_overview_and_audit(client, admin):
 def test_logout(client, admin):
     assert admin.post("/api/admin/logout").status_code == 200
     assert client.get("/api/admin/overview").status_code == 401
+
+
+def test_access_code_gate(client, monkeypatch):
+    """设了口令后，员工端必须先过门；管理接口不受影响。"""
+    from pool.config import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "access_code", "team-2026")
+    assert client.get("/").status_code == 401
+    assert client.get("/api/state").status_code == 401
+    assert client.post("/api/access", json={"code": "wrong"}).status_code == 401
+    assert client.post("/api/admin/login",
+                       json={"username": "admin", "password": "test-pass"}).status_code == 200
+    assert client.post("/api/access", json={"code": "team-2026"}).status_code == 200
+    assert client.get("/api/state").status_code == 200

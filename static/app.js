@@ -6,6 +6,10 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const STORE_KEY = 'pool.myBookings';
 
+  // 支持挂在子路径下（如 https://your-domain.com/tenxunhuiyiyuding/）。
+  // 根路径时为 ''，子路径时为 '/tenxunhuiyiyuding'，所以所有接口都用 API_BASE + '/api/...'。
+  const API_BASE = new URL('.', document.baseURI).pathname.replace(/\/$/, '');
+
   const state = {
     cfg: {},
     admin: null,
@@ -34,7 +38,7 @@
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
+    const res = await fetch(API_BASE + path, {
       credentials: 'same-origin',
       headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
       ...options,
@@ -914,7 +918,7 @@
     $('#btn-export').onclick = () => {
       const d = $('#filter-date').value;
       const q = d ? `?date_from=${d}&date_to=${d}` : '';
-      window.open(`/api/admin/export.csv${q}`, '_blank');
+      window.open(`${API_BASE}/api/admin/export.csv${q}`, '_blank');
     };
 
     ['#filter-date', '#filter-status'].forEach((sel) => {

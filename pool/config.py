@@ -71,6 +71,7 @@ class Settings:
         '"password":"{password}","time_zone":"{timezone}"}'
     )
     mcp_timeout: float = 20.0
+    access_code: str = ""
     demo_mode: bool = False
 
     @property
@@ -100,6 +101,7 @@ def load_settings() -> Settings:
     s.mcp_skill_version = os.environ.get("POOL_MCP_SKILL_VERSION", s.mcp_skill_version).strip()
     s.mcp_args_template = os.environ.get("POOL_MCP_ARGS", s.mcp_args_template).strip()
     s.mcp_timeout = float(os.environ.get("POOL_MCP_TIMEOUT", s.mcp_timeout))
+    s.access_code = os.environ.get("POOL_ACCESS_CODE", "").strip()
     s.demo_mode = _bool("POOL_DEMO", False)
     s.db_path.parent.mkdir(parents=True, exist_ok=True)
     return s

@@ -1,0 +1,19 @@
+[Unit]
+Description=Meeting Pool (Tencent Meeting account pool)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meeting
+Group=meeting
+WorkingDirectory=/opt/meeting-pool
+EnvironmentFile=/opt/meeting-pool/.env
+ExecStart=/opt/meeting-pool/.venv/bin/python app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
