@@ -18,6 +18,7 @@
     </div>
     <nav class="tabs" id="main-tabs">
       <button class="tab active" data-view="borrow">借会议号</button>
+      <button class="tab" data-view="gantt">排期甘特图</button>
       <button class="tab" data-view="admin">号池管理</button>
     </nav>
   </header>
@@ -143,10 +144,41 @@
               <button class="btn ghost tiny" id="tl-prev" type="button">前一天</button>
               <span id="tl-date" class="hint"></span>
               <button class="btn ghost tiny" id="tl-next" type="button">后一天</button>
+              <button class="btn ghost tiny" id="tl-full" type="button">完整甘特图</button>
             </span>
           </div>
         </div>
         <div class="timeline" id="timeline"></div>
+      </div>
+    </section>
+
+<!-- ===================== 排期甘特图 ===================== -->
+    <section class="view hidden" id="view-gantt">
+      <div class="card gantt-card">
+        <div class="card-head gantt-bar">
+          <div class="gantt-title">
+            <h2>会议排期</h2>
+            <span class="hint" id="g-summary"></span>
+          </div>
+          <div class="gantt-tools">
+            <span class="tl-legends">
+              <span class="legend"><i class="lg-pool"></i>号池借出</span>
+              <span class="legend"><i class="lg-live"></i>进行中</span>
+              <span class="legend"><i class="lg-done"></i>已结束</span>
+              <span class="legend"><i class="lg-up"></i>上游已约</span>
+            </span>
+            <span class="tl-nav">
+              <button class="btn ghost tiny" id="g-prev" type="button">前一天</button>
+              <input type="date" id="g-date" />
+              <button class="btn ghost tiny" id="g-next" type="button">后一天</button>
+              <button class="btn ghost tiny" id="g-today" type="button">今天</button>
+            </span>
+          </div>
+        </div>
+        <div class="gantt-scroll">
+          <div class="gantt" id="gantt"></div>
+        </div>
+        <p class="gantt-hint">左右滑动看全天 · 点色块看这个时段 · 点空白可把时间填进借号表单</p>
       </div>
     </section>
 

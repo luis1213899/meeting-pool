@@ -110,10 +110,14 @@
   /* ------------------------------------------------------------ 视图切换 */
 
   function switchView(view) {
+    if (!['borrow', 'gantt', 'admin'].includes(view)) view = 'borrow';
+    state.view = view;
     $$('#main-tabs .tab').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
-    $('#view-borrow').classList.toggle('hidden', view !== 'borrow');
-    $('#view-admin').classList.toggle('hidden', view !== 'admin');
+    ['borrow', 'gantt', 'admin'].forEach((v) => {
+      $(`#view-${v}`).classList.toggle('hidden', v !== view);
+    });
     if (view === 'admin') ensureAdmin();
+    if (view === 'gantt') loadGantt();
     if (location.hash !== `#/${view}`) history.replaceState(null, '', `#/${view}`);
   }
 
@@ -309,6 +313,98 @@
   }
 
 
+
+  /* ------------------------------------------------------------ 排期甘特图 */
+
+  function hourOf(iso) {
+    const d = new Date(iso);
+    return d.getHours() + d.getMinutes() / 60;
+  }
+
+  function shiftDay(dateStr, delta) {
+    const d = new Date(`${dateStr}T12:00:00`);
+    d.setDate(d.getDate() + delta);
+    return isoDate(d);
+  }
+
+  async function loadGantt(date) {
+    if (date) state.ganttDate = date;
+    if (!state.ganttDate) state.ganttDate = state.tlDate || isoDate(new Date());
+    const data = await api(`/api/timeline?date=${encodeURIComponent(state.ganttDate)}`);
+    state.ganttDate = data.date;
+    $('#g-date').value = data.date;
+
+    const blocks = [];
+    (data.accounts || []).forEach((a) => (a.blocks || []).forEach((b) => {
+      blocks.push({ ...b, account: a.label });
+    }));
+
+    let startH = Number(state.cfg.work_hour_start || 8);
+    let endH = Number(state.cfg.work_hour_end || 23);
+    blocks.forEach((b) => {
+      startH = Math.min(startH, Math.floor(hourOf(b.start_at)));
+      endH = Math.max(endH, Math.ceil(hourOf(b.end_at)));
+    });
+    startH = Math.max(0, Math.min(startH, 23));
+    endH = Math.min(24, Math.max(endH, startH + 1));
+    const span = endH - startH;
+    const pct = (h) => ((h - startH) / span) * 100;
+
+    $('#gantt').style.setProperty('--hours', String(span));
+    state.ganttBlocks = blocks;
+    state.gStartH = startH;
+    state.gSpan = span;
+
+    const upstream = blocks.filter((b) => b.source === 'external').length;
+    $('#g-summary').textContent =
+      `${(data.accounts || []).length} 个号 · 号池 ${blocks.length - upstream} 场`
+      + ` · 上游 ${upstream} 场 · ${pad(startH)}:00–${pad(endH)}:00`;
+
+    const step = span > 12 ? 2 : 1;
+    const marks = [];
+    for (let h = startH; h <= endH; h += step) marks.push(h);
+    if (marks[marks.length - 1] !== endH) marks.push(endH);
+    const ticks = marks.map((h) => `<span style="left:${pct(h)}%">${pad(h)}:00</span>`).join('');
+
+    const today = isoDate(new Date());
+    let nowLine = '';
+    if (data.date === today) {
+      const n = new Date();
+      const h = n.getHours() + n.getMinutes() / 60;
+      if (h >= startH && h <= endH) nowLine = `<div class="g-now" style="left:${pct(h)}%"></div>`;
+    }
+
+    let key = 0;
+    const rows = (data.accounts || []).map((a) => {
+      const inner = (a.blocks || []).map((b) => {
+        const l = Math.max(0, Math.min(100, pct(Math.max(startH, hourOf(b.start_at)))));
+        const r = Math.max(0, Math.min(100, pct(Math.min(endH, hourOf(b.end_at)))));
+        const w = Math.max(1.1, r - l);
+        let cls = '';
+        if (b.source === 'external') cls = 'external';
+        else if (b.status === 'active') cls = 'live';
+        else if (b.status === 'done') cls = 'done';
+        const myKey = key;
+        key += 1;
+        const label = b.source === 'external' ? `上游 · ${b.subject}` : b.subject;
+        const tip = `${b.subject} · ${fmtRange(b.start_at, b.end_at)}`;
+        const size = w >= 3.2 ? '' : 'bare';
+        const inner = size === 'bare'
+          ? ''
+          : `<b>${clock(b.start_at)}</b><span>${esc(label)}</span>`;
+        return `<button type="button" class="g-block ${cls} ${size}" data-gkey="${myKey}" style="left:${l}%;width:${w}%" title="${esc(tip)}" aria-label="${esc(tip)}">${inner}</button>`;
+      }).join('');
+      return `<div class="g-row">
+        <div class="g-label" title="${esc(a.label)}"><span class="dot ${esc(a.health || 'unknown')}"></span>${esc(a.label)}</div>
+        <div class="g-track" data-acc="${esc(a.label)}">${nowLine}${inner}</div>
+      </div>`;
+    }).join('');
+
+    $('#gantt').innerHTML = (data.accounts || []).length
+      ? `<div class="g-row g-head"><div class="g-label">账号</div><div class="g-axis">${ticks}</div></div>${rows}`
+      : '<p class="muted small" style="padding:18px">号池里还没有可用账号。</p>';
+  }
+
   /* 时间轴：点色块 / 点空白看时段 */
   function slotSheet(block) {
     const isExternal = block.source === 'external';
@@ -331,15 +427,15 @@
     m.querySelector('[data-close]').onclick = () => closeModal(false);
   }
 
-  function freeSlotSheet(accLabel, at) {
+  function freeSlotSheet(accLabel, at, dateStr) {
     const m = openModal(`
       <div class="modal-head">
         <h3>这个时段空着</h3>
         <p>${esc(accLabel)} 在 ${pad(at.hour)}:${pad(at.minute)} 起没有会</p>
       </div>
       <div class="modal-body">
-        <p class="muted small">想用这个时段，回到左边表单把日期和开始时间填成
-          <b>${pad(at.hour)}:${pad(at.minute)}</b> 就能借到号。</p>
+        <p class="muted small">想用这个时段，点下面按钮把
+          <b>${pad(at.hour)}:${pad(at.minute)}</b> 填进借号表单，补上名字就能借。</p>
       </div>
       <div class="modal-foot">
         <button class="btn" data-close>知道了</button>
@@ -348,12 +444,14 @@
     m.querySelector('[data-close]').onclick = () => closeModal(false);
     m.querySelector('[data-fill]').onclick = () => {
       const form = $('#book-form');
-      form.date.value = state.tlDate;
+      form.date.value = dateStr || state.tlDate;
       form.time.value = `${pad(at.hour)}:${pad(at.minute)}`;
       form.dataset.touched = '1';
       closeModal(false);
+      switchView('borrow');
       form.scrollIntoView({ behavior: 'smooth', block: 'center' });
       form.requester.focus();
+      toast(`已填好 ${pad(at.hour)}:${pad(at.minute)}，补上名字就能借`, 3600);
     };
   }
 
@@ -939,7 +1037,32 @@
       const ratio = (e.clientX - rect.left) / rect.width;
       const hourFloat = state.tlStartH + ratio * state.tlSpan;
       const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
-      freeSlotSheet(track.dataset.acc || '这个号', { hour: Math.floor(total / 60), minute: total % 60 });
+      freeSlotSheet(track.dataset.acc || '这个号', { hour: Math.floor(total / 60), minute: total % 60 }, state.tlDate);
+    });
+
+    $('#tl-full').onclick = () => switchView('gantt');
+
+    $('#g-prev').onclick = () => loadGantt(shiftDay(state.ganttDate, -1));
+    $('#g-next').onclick = () => loadGantt(shiftDay(state.ganttDate, 1));
+    $('#g-today').onclick = () => loadGantt(isoDate(new Date()));
+    $('#g-date').onchange = (e) => { if (e.target.value) loadGantt(e.target.value); };
+    $('#gantt').addEventListener('click', (e) => {
+      const block = e.target.closest('.g-block');
+      if (block) {
+        const data = state.ganttBlocks[Number(block.dataset.gkey)];
+        if (data) slotSheet(data);
+        return;
+      }
+      const track = e.target.closest('.g-track');
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = (e.clientX - rect.left) / rect.width;
+      const hourFloat = state.gStartH + ratio * state.gSpan;
+      const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
+      freeSlotSheet(track.dataset.acc || '这个号',
+                    { hour: Math.floor(total / 60), minute: total % 60 },
+                    state.ganttDate);
     });
 
     $('#tl-prev').onclick = () => {
@@ -1057,7 +1180,11 @@
       toast(`加载失败：${e.message}`, 3600);
     }
     const hash = location.hash.replace('#/', '');
-    switchView(hash === 'admin' ? 'admin' : 'borrow');
+    switchView(hash || 'borrow');
+    window.addEventListener('hashchange', () => {
+      const next = location.hash.replace('#/', '');
+      if (next && next !== state.view) switchView(next);
+    });
   }
 
   document.addEventListener('DOMContentLoaded', boot);
