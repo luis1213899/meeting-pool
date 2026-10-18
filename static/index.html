@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>会议号池 · 团队腾讯会议共享</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">会</div>
+      <div class="brand-text">
+        <h1>会议号池</h1>
+        <p>把团队里的腾讯会议会员号，变成人人可借的会议室</p>
+      </div>
+    </div>
+    <nav class="tabs" id="main-tabs">
+      <button class="tab active" data-view="borrow">借会议号</button>
+      <button class="tab" data-view="admin">号池管理</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ===================== 员工端 ===================== -->
+    <section class="view" id="view-borrow">
+      <div class="stat-strip" id="public-stats"></div>
+
+      <div class="borrow-grid">
+        <form class="card form-card" id="book-form" autocomplete="off">
+          <div class="card-head">
+            <h2>开一个会</h2>
+            <span class="hint">系统会自动挑一个空闲的号给你</span>
+          </div>
+
+          <div class="row-2">
+            <label class="field">
+              <span>你的名字 <i>*</i></span>
+              <input name="requester" maxlength="20" placeholder="张三" required />
+            </label>
+            <label class="field">
+              <span>部门</span>
+              <input name="dept" maxlength="30" placeholder="市场部" />
+            </label>
+          </div>
+
+          <div class="row-2">
+            <label class="field">
+              <span>联系方式</span>
+              <input name="contact" maxlength="40" placeholder="微信 / 手机，便于找回" />
+            </label>
+            <label class="field">
+              <span>入会密码</span>
+              <input name="password" maxlength="6" placeholder="留空自动生成" inputmode="numeric" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>会议主题 <i>*</i></span>
+            <input name="subject" maxlength="60" placeholder="客户方案沟通" required />
+          </label>
+
+          <div class="row-3">
+            <label class="field">
+              <span>日期 <i>*</i></span>
+              <input type="date" name="date" required />
+            </label>
+            <label class="field">
+              <span>开始 <i>*</i></span>
+              <input type="time" name="time" required />
+            </label>
+            <label class="field">
+              <span>时长</span>
+              <select name="duration">
+                <option value="30">30 分钟</option>
+                <option value="45">45 分钟</option>
+                <option value="60" selected>1 小时</option>
+                <option value="90">1.5 小时</option>
+                <option value="120">2 小时</option>
+                <option value="180">3 小时</option>
+                <option value="240">4 小时</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>备注</span>
+            <input name="note" maxlength="120" placeholder="比如：需要录屏 / 客户从外部加入" />
+          </label>
+
+          <button class="btn primary block" type="submit" id="book-submit">借一个会议号</button>
+          <p class="form-note" id="form-note"></p>
+        </form>
+
+        <div class="side">
+          <div class="card result-card" id="result-card">
+            <div class="result-empty">
+              <div class="empty-icon">⌁</div>
+              <h3>会议号会出现在这里</h3>
+              <p>填左边三行，点一下按钮，就能拿到会议号、入会链接和可直接转发的邀请文案。</p>
+            </div>
+          </div>
+
+          <div class="card" id="my-card">
+            <div class="card-head">
+              <h2>我的预约</h2>
+              <button class="btn ghost tiny" id="my-refresh" type="button">刷新</button>
+            </div>
+            <div id="my-list" class="my-list">
+              <p class="muted small">还没有借过号。借完会自动记在这里（只在本机保存）。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card timeline-card">
+        <div class="card-head">
+          <h2>今天号池占用</h2>
+          <div class="timeline-tools">
+            <button class="btn ghost tiny" id="tl-prev" type="button">前一天</button>
+            <span id="tl-date" class="hint"></span>
+            <button class="btn ghost tiny" id="tl-next" type="button">后一天</button>
+          </div>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+    </section>
+
+    <!-- ===================== 管理端 ===================== -->
+    <section class="view hidden" id="view-admin">
+      <div class="card login-card" id="admin-login">
+        <h2>号池管理登录</h2>
+        <p class="muted">这里能看到所有账号、Token 状态和借用记录，请只给管理员使用。</p>
+        <form id="login-form" autocomplete="off">
+          <label class="field">
+            <span>管理员账号</span>
+            <input name="username" value="admin" required />
+          </label>
+          <label class="field">
+            <span>口令</span>
+            <input name="password" type="password" required />
+          </label>
+          <button class="btn primary block" type="submit">登录</button>
+          <p class="form-note" id="login-note"></p>
+        </form>
+      </div>
+
+      <div id="admin-panel" class="hidden">
+        <div class="admin-bar">
+          <div>
+            <h2>号池台账</h2>
+            <p class="muted small" id="admin-sub">—</p>
+          </div>
+          <div class="admin-actions">
+            <button class="btn" id="btn-export" type="button">导出 CSV</button>
+            <button class="btn" id="btn-diag" type="button">MCP 自检</button>
+            <button class="btn" id="btn-refresh" type="button">刷新</button>
+            <button class="btn primary" id="btn-add-account" type="button">+ 新增账号</button>
+            <button class="btn ghost" id="btn-logout" type="button">退出</button>
+          </div>
+        </div>
+
+        <div class="stat-strip" id="admin-stats"></div>
+
+        <div class="card">
+          <div class="table-wrap">
+            <table class="table" id="accounts-table">
+              <thead>
+                <tr>
+                  <th>账号</th><th>提供者</th><th>类型</th><th>接入</th><th>凭证</th>
+                  <th>今日/本周</th><th>状态</th><th>健康</th><th class="right">操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h2>近 7 天账号使用</h2></div>
+            <div id="usage-chart" class="bars"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>借用时段分布</h2></div>
+            <div id="hour-chart" class="heat"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>预约记录</h2>
+            <div class="filters">
+              <input type="date" id="filter-date" />
+              <select id="filter-status">
+                <option value="">全部状态</option>
+                <option value="pending">待开始</option>
+                <option value="active">进行中</option>
+                <option value="done">已结束</option>
+                <option value="cancelled">已取消</option>
+                <option value="failed">失败</option>
+              </select>
+              <input type="search" id="filter-keyword" placeholder="主题 / 姓名 / 会议号" />
+              <button class="btn ghost tiny" id="filter-clear" type="button">清空</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="bookings-table">
+              <thead>
+                <tr>
+                  <th>时间</th><th>主题</th><th>借用人</th><th>账号</th><th>会议号</th>
+                  <th>状态</th><th class="right">操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <h2>借用规则</h2>
+              <span class="hint">改完立即生效</span>
+            </div>
+            <form id="config-form" class="config-form">
+              <label class="field"><span>同一账号场间缓冲（分钟）</span><input type="number" name="buffer_minutes" min="0" max="60" /></label>
+              <label class="field"><span>每人每周上限（次）</span><input type="number" name="max_per_week" min="0" max="99" /></label>
+              <label class="field"><span>可提前预约天数</span><input type="number" name="window_days" min="1" max="90" /></label>
+              <label class="field"><span>单场最短（分钟）</span><input type="number" name="min_minutes" min="5" max="120" /></label>
+              <label class="field"><span>单场最长（分钟）</span><input type="number" name="max_minutes" min="15" max="720" /></label>
+              <label class="field"><span>可借起始小时</span><input type="number" name="work_hour_start" min="0" max="23" /></label>
+              <label class="field"><span>可借结束小时</span><input type="number" name="work_hour_end" min="1" max="24" /></label>
+              <label class="field wide"><span>员工端提示语</span><input name="notice" maxlength="200" /></label>
+              <button class="btn primary" type="submit">保存规则</button>
+            </form>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>操作日志</h2></div>
+            <div id="audit-list" class="audit-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>会议号池 · 本工具只做账号调度，会议数据仍归各账号所有</span>
+    <span id="foot-time"></span>
+  </footer>
+</div>
+
+<div id="modal-root" class="modal-root hidden"></div>
+<div id="toast" class="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

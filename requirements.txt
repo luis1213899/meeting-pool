@@ -1,0 +1,5 @@
+# 会议号池 —— 运行时依赖
+fastapi>=0.110
+uvicorn>=0.27
+cryptography>=42
+httpx>=0.27

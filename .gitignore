@@ -1,0 +1,19 @@
+# 密钥与本地状态：绝对不能提交
+.env
+.pool_secret
+data/
+output/
+server.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# 数据库与备份
+*.db
+*.db-shm
+*.db-wal
+*.bak-*
