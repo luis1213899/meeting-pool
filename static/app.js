@@ -164,6 +164,7 @@
 
   function renderResult(booking) {
     const card = $('#result-card');
+    card.removeAttribute('data-empty');
     card.innerHTML = `
       <div class="result-live">
         <div class="result-top">
@@ -208,9 +209,11 @@
       });
       toast(res.note || '已取消，号已回池', 3000);
       if (fromResult) {
-        $('#result-card').innerHTML = `
+        const rc = $('#result-card');
+        rc.innerHTML = `
           <div class="result-empty"><div class="empty-icon">✓</div>
           <h3>这场会已取消</h3><p>腾讯会议里也一并取消了，号码回到了号池。</p></div>`;
+        rc.setAttribute('data-empty', '1');
       }
       await Promise.all([loadState(), loadTimeline(), loadMy()]);
     } catch (e) {
@@ -664,19 +667,29 @@
 
   function renderAccounts(items) {
     const tbody = $('#accounts-table tbody');
+    const cards = $('#account-cards');
+    const emptyText = '号池是空的。点右上角「新增账号」，把同事的会员号加进来。';
+    const credentialOf = (a) => (a.driver === 'mcp'
+      ? (a.has_token ? `<span class="token-chip">${esc(a.token_hint || '已绑定')}</span>` : '<span class="pill red">缺 Token</span>')
+      : (a.driver === 'manual'
+        ? `<span class="token-chip">${esc(a.fixed_code)}</span>`
+        : '<span class="pill gray">演示</span>'));
+    const statusOf = (a) => (a.status === 'active'
+      ? '<span class="pill green">启用</span>'
+      : (a.status === 'paused' ? '<span class="pill amber">暂停</span>' : '<span class="pill gray">停用</span>'));
+    const actionsOf = (a) => `<button class="btn ghost tiny" data-probe="${a.id}">检测</button>
+          <button class="btn ghost tiny" data-edit="${a.id}">编辑</button>
+          <button class="btn ghost tiny" data-toggle="${a.id}">${a.status === 'active' ? '暂停' : '启用'}</button>
+          <button class="btn ghost tiny danger" data-del="${a.id}">删除</button>`;
+
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="muted small" style="padding:22px">号池是空的。点右上角「新增账号」，把同事的会员号加进来。</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="9" class="muted small" style="padding:22px">${emptyText}</td></tr>`;
+      cards.innerHTML = `<p class="muted small" style="padding:20px 4px">${emptyText}</p>`;
       return;
     }
     tbody.innerHTML = items.map((a) => {
-      const credential = a.driver === 'mcp'
-        ? (a.has_token ? `<span class="token-chip">${esc(a.token_hint || '已绑定')}</span>` : '<span class="pill red">缺 Token</span>')
-        : (a.driver === 'manual'
-          ? `<span class="token-chip">${esc(a.fixed_code)}</span>`
-          : '<span class="pill gray">演示</span>');
-      const statusPillHtml = a.status === 'active'
-        ? '<span class="pill green">启用</span>'
-        : (a.status === 'paused' ? '<span class="pill amber">暂停</span>' : '<span class="pill gray">停用</span>');
+      const credential = credentialOf(a);
+      const statusPillHtml = statusOf(a);
       return `<tr>
         <td><div class="cell-main">${esc(a.label)}</div><div class="cell-sub">${esc(a.note || '')}</div></td>
         <td><div>${esc(a.owner_name || '—')}</div><div class="cell-sub">${esc(a.owner_contact || '')}</div></td>
@@ -690,25 +703,42 @@
           ${a.health_note ? `<div class="cell-sub" title="${esc(a.health_note)}">${esc(a.health_note.slice(0, 22))}</div>` : ''}
           ${a.sync_error ? `<div class="cell-sub" title="${esc(a.sync_error)}" style="color:var(--amber)">对账失败</div>` : ''}
           ${a.last_sync_at ? `<div class="cell-sub">同步 ${esc(a.last_sync_at.slice(5, 16).replace('T', ' '))}</div>` : ''}</td>
-        <td><div class="row-actions">
-          <button class="btn ghost tiny" data-probe="${a.id}" title="检测 Token 是否可用">检测</button>
-          <button class="btn ghost tiny" data-edit="${a.id}">编辑</button>
-          <button class="btn ghost tiny" data-toggle="${a.id}">${a.status === 'active' ? '暂停' : '启用'}</button>
-          <button class="btn ghost tiny danger" data-del="${a.id}">删除</button>
-        </div></td>
+        <td><div class="row-actions">${actionsOf(a)}</div></td>
       </tr>`;
     }).join('');
 
-    $$('[data-probe]', tbody).forEach((b) => b.onclick = () => probeAccount(Number(b.dataset.probe), b));
-    $$('[data-edit]', tbody).forEach((b) => b.onclick = () => openAccountModal(items.find((x) => x.id === Number(b.dataset.edit))));
-    $$('[data-toggle]', tbody).forEach((b) => b.onclick = () => toggleAccount(Number(b.dataset.toggle)));
-    $$('[data-del]', tbody).forEach((b) => b.onclick = () => deleteAccount(Number(b.dataset.del)));
+    // 手机端卡片：表格在窄屏会挤成一列，这里换成卡片更好点
+    cards.innerHTML = items.map((a) => `
+      <div class="acc-card">
+        <div class="acc-card-head">
+          <div class="acc-card-title">
+            <b>${esc(a.label)}</b>
+            <span class="cell-sub">${esc(a.owner_name || '—')} · ${esc(TIER_TEXT[a.tier] || a.tier)} · ${esc(DRIVER_TEXT[a.driver] || a.driver)}</span>
+          </div>
+          ${statusOf(a)}
+        </div>
+        <div class="acc-card-meta">
+          ${credentialOf(a)}
+          <span>今日 ${a.today_count} 次 · 本周 ${a.week_count} 次</span>
+          <span><i class="dot ${esc(a.health)}"></i>${esc(HEALTH_TEXT[a.health] || a.health)}${a.busy_now ? ' · 使用中' : ''}</span>
+          ${a.external_count ? `<span>上游 ${a.external_count} 场</span>` : ''}
+        </div>
+        <div class="acc-card-actions">${actionsOf(a)}</div>
+      </div>`).join('');
+
+    $$('[data-probe]').forEach((b) => b.onclick = () => probeAccount(Number(b.dataset.probe), b));
+    $$('[data-edit]').forEach((b) => b.onclick = () => openAccountModal(items.find((x) => x.id === Number(b.dataset.edit))));
+    $$('[data-toggle]').forEach((b) => b.onclick = () => toggleAccount(Number(b.dataset.toggle)));
+    $$('[data-del]').forEach((b) => b.onclick = () => deleteAccount(Number(b.dataset.del)));
   }
 
   function renderBookings(items) {
     const tbody = $('#bookings-table tbody');
+    const cards = $('#booking-cards');
+    const blank = '没有符合条件的记录。';
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="muted small" style="padding:22px">没有符合条件的记录。</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="7" class="muted small" style="padding:22px">${blank}</td></tr>`;
+      cards.innerHTML = `<p class="muted small" style="padding:20px 4px">${blank}</p>`;
       return;
     }
     tbody.innerHTML = items.map((b) => `
@@ -722,11 +752,32 @@
         <td><div class="row-actions">
           ${['pending', 'active'].includes(b.status)
             ? `<button class="btn ghost tiny danger" data-bcancel="${b.id}">强制结束</button>` : ''}
-          ${b.join_url ? `<a class="btn ghost tiny" href="${esc(b.join_url)}" target="_blank" rel="noopener">入会</a>` : ''}
+          ${['pending', 'active'].includes(b.status) && b.join_url ? `<a class="btn ghost tiny" href="${esc(b.join_url)}" target="_blank" rel="noopener">入会</a>` : ''}
         </div></td>
       </tr>`).join('');
 
-    $$('[data-bcancel]', tbody).forEach((b) => {
+    cards.innerHTML = items.map((b) => `
+      <div class="bk-card">
+        <div class="acc-card-head">
+          <div class="acc-card-title">
+            <b>${esc(b.subject)}</b>
+            <span class="cell-sub">${esc(fmtRange(b.start_at, b.end_at))} · ${esc(b.requester)}</span>
+          </div>
+          ${statusPill(b.status)}
+        </div>
+        <div class="acc-card-meta">
+          <span class="token-chip">${esc(b.meeting_code || '—')}</span>
+          <span>${esc(b.account_label || '—')}</span>
+        </div>
+        ${b.fail_reason ? `<div class="cell-sub" style="margin-top:6px">${esc(b.fail_reason)}</div>` : ''}
+        <div class="acc-card-actions">
+          ${['pending', 'active'].includes(b.status)
+            ? `<button class="btn ghost tiny danger" data-bcancel="${b.id}">强制结束</button>` : ''}
+          ${['pending', 'active'].includes(b.status) && b.join_url ? `<a class="btn ghost tiny" href="${esc(b.join_url)}" target="_blank" rel="noopener">入会</a>` : ''}
+        </div>
+      </div>`).join('');
+
+    $$('[data-bcancel]').forEach((b) => {
       b.onclick = async () => {
         if (!await confirmDialog('结束这场会？', '会同时在腾讯会议侧取消（MCP 账号），并立即释放号码。', '结束')) return;
         try {
