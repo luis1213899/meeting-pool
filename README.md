@@ -387,7 +387,11 @@ meeting-pool/
 ## 十一、测试
 
 ```bash
-python -m pytest          # 57 passed
+python -m pytest          # 67 passed
+
+# 浏览器把每个按钮都点一遍（需要 playwright + 本地起服务）
+pip install playwright && playwright install chromium
+python tools/ui_smoke.py  # 27/27 passed
 ```
 
 覆盖：Token 加解密与掩码、口令哈希、MCP 缺 Token 校验、固定会议号校验、正常分配、同号冲突、缓冲期、负载均衡、日限额、周配额、时长上下限、过去时间、非工作时段、取消释放、取消凭证、上游失败换号、状态推进、看板形状、CSV 导出、登录鉴权、接口全流程，MCP 两层包装解析（成功 / `token not found` / 业务 4xx / `isError`）、`time_zone` 与 `_client_info` 注入、参数为空自动剔除，以及**对账**：上游会议导入、上游会议占位导致分号被拒、取消失败不释放号码、强制释放留标记、重新取消清除标记、已开始会议按「结束会议」处理且不误报。

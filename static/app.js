@@ -1019,6 +1019,30 @@
     });
     $('#my-refresh').onclick = () => loadMy().then(() => toast('已刷新'));
 
+    /* 排期甘特图 */
+    $('#g-prev').onclick = () => loadGantt(shiftDay(state.ganttDate, -1));
+    $('#g-next').onclick = () => loadGantt(shiftDay(state.ganttDate, 1));
+    $('#g-today').onclick = () => loadGantt(isoDate(new Date()));
+    $('#g-date').onchange = (e) => { if (e.target.value) loadGantt(e.target.value); };
+    $('#gantt').addEventListener('click', (e) => {
+      const block = e.target.closest('.g-block');
+      if (block) {
+        const data = state.ganttBlocks[Number(block.dataset.gkey)];
+        if (data) slotSheet(data);
+        return;
+      }
+      const track = e.target.closest('.g-track');
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = (e.clientX - rect.left) / rect.width;
+      const hourFloat = state.gStartH + ratio * state.gSpan;
+      const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
+      freeSlotSheet(track.dataset.acc || '这个号',
+                    { hour: Math.floor(total / 60), minute: total % 60 },
+                    state.ganttDate);
+    });
+
     $('#login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = e.target;
