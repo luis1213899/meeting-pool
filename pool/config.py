@@ -66,9 +66,11 @@ class Settings:
     mcp_token_header: str = "X-Tencent-Meeting-Token"
     mcp_skill_version: str = "v1.0.14"
     # 官方参数名是 time_zone（带下划线），且所有工具都要 _client_info（代码里自动注入）
+    # auto_record_type: cloud/none；auto_in_waiting_room: true/false（代码里会转成布尔）
     mcp_args_template: str = (
         '{"subject":"{subject}","start_time":"{start}","end_time":"{end}",'
-        '"password":"{password}","time_zone":"{timezone}"}'
+        '"password":"{password}","time_zone":"{timezone}",'
+        '"auto_record_type":"{record_type}","auto_in_waiting_room":"{waiting}"}'
     )
     mcp_timeout: float = 20.0
     demo_mode: bool = False

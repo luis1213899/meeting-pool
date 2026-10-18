@@ -46,6 +46,9 @@ CLIENT_INFO = {
     "model": "meeting-pool/1.0",
 }
 
+# 模板里这些字段上游要求 number，字符串会被拒
+NUMERIC_KEYS = {"meeting_type", "only_user_join_type", "water_mark_type"}
+
 TOKEN_HINT = "Token 无效或已失效，请到 meeting.tencent.com/ai-skill.html 用该账号重新获取"
 URL_HINT = ("MCP 地址 404：官方端点是 /mcp/wemeet-open/v1，"
             "请在 .env 或后台自检里确认 POOL_MCP_URL")
@@ -62,6 +65,7 @@ class MeetingResult:
     join_url: str = ""
     password: str = ""
     host_key: str = ""
+    record_enabled: bool = True
     raw: str = ""
 
     def as_dict(self) -> dict:
@@ -172,6 +176,7 @@ class MockDriver(BaseDriver):
             meeting_id=f"mock-{secrets.token_hex(6)}",
             join_url=f"https://meeting.tencent.com/dm/{code}",
             password=payload.get("password", ""),
+            record_enabled=bool(payload.get("record", True)),
             raw=json.dumps({"driver": "mock", "code": code}, ensure_ascii=False),
         )
 
@@ -202,6 +207,7 @@ class ManualDriver(BaseDriver):
             meeting_id="",
             join_url=f"https://meeting.tencent.com/dm/{digits}",
             password=payload.get("password", ""),
+            record_enabled=bool(payload.get("record", True)),
             raw=json.dumps({"driver": "manual", "code": digits}, ensure_ascii=False),
         )
 
@@ -335,13 +341,23 @@ class McpDriver(BaseDriver):
                     .replace("{start}", payload["start"])
                     .replace("{end}", payload["end"])
                     .replace("{password}", payload.get("password", ""))
-                    .replace("{timezone}", payload.get("timezone", "Asia/Shanghai")))
+                    .replace("{timezone}", payload.get("timezone", "Asia/Shanghai"))
+                    .replace("{record_type}", "cloud" if payload.get("record", True) else "none")
+                    .replace("{waiting}", "true" if payload.get("waiting_room") else "false"))
         args = _maybe_json(rendered)
         if not isinstance(args, dict) or not args:
             raise DriverError("POOL_MCP_ARGS 模板不是合法 JSON")
-        empty = [k for k, v in args.items() if v == ""]
-        for key in empty:
+        for key in [k for k, v in args.items() if v == ""]:
             args.pop(key, None)
+        # 模板里一切都是字符串，这里把布尔/数字还原成 JSON 类型，否则上游会当成字符串
+        for key, value in list(args.items()):
+            if isinstance(value, str) and value.lower() in ("true", "false"):
+                args[key] = value.lower() == "true"
+            elif key in NUMERIC_KEYS and isinstance(value, str) and value.isdigit():
+                args[key] = int(value)
+        # 老 .env 里的模板可能没有这两个占位符，这里兜底，保证录制/等候室行为一致
+        args.setdefault("auto_record_type", "cloud" if payload.get("record", True) else "none")
+        args.setdefault("auto_in_waiting_room", bool(payload.get("waiting_room")))
         return args
 
     # ---- 对外能力
@@ -351,7 +367,17 @@ class McpDriver(BaseDriver):
         return True, ""
 
     def create(self, account: dict, token: str, payload: dict) -> MeetingResult:
-        body = self._call(token, SETTINGS.mcp_tool, self._build_args(payload))
+        record_enabled = bool(payload.get("record", True))
+        try:
+            body = self._call(token, SETTINGS.mcp_tool, self._build_args(payload))
+        except DriverError as exc:
+            # 账号没有录制权限时，不让整场预约失败：降级为不录制并如实记录
+            text = str(exc).lower()
+            if record_enabled and ("录制" in str(exc) or "record" in text):
+                body = self._call(token, SETTINGS.mcp_tool, self._build_args({**payload, "record": False}))
+                record_enabled = False
+            else:
+                raise
         code = _dig(body, ("meeting_code", "meetingCode", "meeting_number", "meetingNumber",
                            "meeting_no", "meetingNo", "code"))
         if not re.fullmatch(r"\d{9}", code or ""):
@@ -370,6 +396,7 @@ class McpDriver(BaseDriver):
             join_url=join_url or f"https://meeting.tencent.com/dm/{code}",
             password=password,
             host_key=host_key,
+            record_enabled=record_enabled,
             raw=json.dumps(body, ensure_ascii=False)[:4000],
         )
 

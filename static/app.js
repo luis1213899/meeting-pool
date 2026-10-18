@@ -27,6 +27,11 @@
 
   function pad(n) { return String(n).padStart(2, '0'); }
 
+  function clock(iso) {
+    const d = new Date(iso);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
   function isoDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 
   function toast(msg, ms = 2200) {
@@ -116,13 +121,16 @@
 
   function defaultSlot() {
     const now = new Date();
+    const startHour = Number(state.cfg.work_hour_start || 8);
+    const endHour = Number(state.cfg.work_hour_end || 23);
     const d = new Date(now.getTime());
     d.setSeconds(0, 0);
     d.setMinutes(Math.ceil((d.getMinutes() + 10) / 15) * 15);
-    const endHour = Number(state.cfg.work_hour_end || 23);
+    // 凌晨/深夜都要落到可借时段内，否则一进页面点提交就被拒
+    if (d.getHours() < startHour) d.setHours(startHour, 0, 0, 0);
     if (d.getHours() >= endHour - 1) {
       d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
+      d.setHours(startHour, 0, 0, 0);
     }
     return d;
   }
@@ -163,7 +171,8 @@
           ${statusPill(booking.status)}
         </div>
         <dl class="kv">
-          ${booking.password ? `<dt>入会密码</dt><dd><b>${esc(booking.password)}</b></dd>` : ''}
+          ${booking.password ? `<dt>入会密码</dt><dd><b>${esc(booking.password)}</b></dd>` : '<dt>入会密码</dt><dd class="muted">未设置（任何人凭会议号可入会）</dd>'}
+          <dt>主持人选项</dt><dd>${booking.record ? '<span class="pill green">自动云录制</span>' : '<span class="pill gray">未开录制</span>'} ${booking.waiting_room ? '<span class="pill amber">等候室</span>' : ''}</dd>
           ${booking.host_key ? `<dt>主持人密钥</dt><dd><b>${esc(booking.host_key)}</b> <span class="muted small">仅自己用，别发群里</span></dd>` : ''}
           ${booking.join_url ? `<dt>入会链接</dt><dd><a href="${esc(booking.join_url)}" target="_blank" rel="noopener">${esc(booking.join_url)}</a></dd>` : ''}
           <dt>出号账号</dt><dd>${esc(booking.account_label || '—')} <span class="muted small">（用完请点下方结束）</span></dd>
@@ -260,19 +269,23 @@
     const startH = Number(state.cfg.work_hour_start || 8);
     const endH = Number(state.cfg.work_hour_end || 23);
     const span = Math.max(1, endH - startH);
-    const track = (blocks) => blocks.map((b) => {
+    state.tlStartH = startH;
+    state.tlSpan = span;
+    state.tlBlocks = [];
+    const track = (blocks, accLabel) => blocks.map((b) => {
       const s = new Date(b.start_at), e = new Date(b.end_at);
       const from = ((s.getHours() + s.getMinutes() / 60) - startH) / span;
       const to = ((e.getHours() + e.getMinutes() / 60) - startH) / span;
       const left = Math.max(0, Math.min(1, from)) * 100;
-      const width = Math.max(2.5, Math.min(1, Math.max(0, to)) * 100 - left);
+      const width = Math.max(1.6, Math.min(1, Math.max(0, to)) * 100 - left);
       let cls = '';
       if (b.source === 'external') cls = 'external';
       else if (b.status === 'active') cls = 'active';
       else if (b.status === 'done') cls = 'done';
       const tip = `${b.subject} · ${b.source === 'external' ? '上游已约' : b.requester} · ${fmtRange(b.start_at, b.end_at)}`;
       const label = b.source === 'external' ? `上游 · ${b.subject}` : b.subject;
-      return `<div class="tl-block ${cls}" style="left:${left}%;width:${width}%" title="${esc(tip)}">${esc(label)}</div>`;
+      const key = state.tlBlocks.push({ ...b, account: accLabel }) - 1;
+      return `<button type="button" class="tl-block ${cls}" data-block="${key}" style="left:${left}%;width:${width}%" title="${esc(tip)}" aria-label="${esc(tip)}">${esc(label)}</button>`;
     }).join('');
 
     if (!data.accounts.length) {
@@ -284,14 +297,64 @@
         <div class="tl-name" title="${esc(a.label)}">
           <span class="dot ${esc(a.health || 'unknown')}"></span>${esc(a.label)}
         </div>
-        <div class="tl-track">${track(a.blocks)}</div>
+        <div class="tl-track" data-acc="${esc(a.label)}">${track(a.blocks, a.label)}</div>
       </div>`).join('') + `
       <div class="tl-axis"><div></div><div class="tl-ticks">
         ${Array.from({ length: 6 }, (_, i) => {
           const h = Math.round(startH + (span * i) / 5);
           return `<span>${pad(h)}:00</span>`;
         }).join('')}
-      </div></div>`;
+      </div></div>
+      <p class="tl-hint">左右滑动看全天，点色块看这个时段</p>`;
+  }
+
+
+  /* 时间轴：点色块 / 点空白看时段 */
+  function slotSheet(block) {
+    const isExternal = block.source === 'external';
+    const statusMap = { pending: '待开始', active: '进行中', done: '已结束', external: block.requester || '上游已约' };
+    const statusText = statusMap[block.status] || block.status;
+    const m = openModal(`
+      <div class="modal-head">
+        <h3>${esc(block.subject)}</h3>
+        <p>${esc(fmtRange(block.start_at, block.end_at))}</p>
+      </div>
+      <div class="modal-body">
+        <dl class="kv">
+          <dt>时段</dt><dd>${esc(clock(block.start_at))} – ${esc(clock(block.end_at))}</dd>
+          <dt>占用方</dt><dd>${isExternal ? '号主自己约的会（腾讯会议侧）' : `号池借出 · ${esc(block.requester || '—')}`}</dd>
+          <dt>出号账号</dt><dd>${esc(block.account || '—')}</dd>
+          <dt>状态</dt><dd>${esc(statusText)}</dd>
+        </dl>
+      </div>
+      <div class="modal-foot"><button class="btn" data-close>知道了</button></div>`);
+    m.querySelector('[data-close]').onclick = () => closeModal(false);
+  }
+
+  function freeSlotSheet(accLabel, at) {
+    const m = openModal(`
+      <div class="modal-head">
+        <h3>这个时段空着</h3>
+        <p>${esc(accLabel)} 在 ${pad(at.hour)}:${pad(at.minute)} 起没有会</p>
+      </div>
+      <div class="modal-body">
+        <p class="muted small">想用这个时段，回到左边表单把日期和开始时间填成
+          <b>${pad(at.hour)}:${pad(at.minute)}</b> 就能借到号。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close>知道了</button>
+        <button class="btn primary" data-fill>填进表单</button>
+      </div>`);
+    m.querySelector('[data-close]').onclick = () => closeModal(false);
+    m.querySelector('[data-fill]').onclick = () => {
+      const form = $('#book-form');
+      form.date.value = state.tlDate;
+      form.time.value = `${pad(at.hour)}:${pad(at.minute)}`;
+      form.dataset.touched = '1';
+      closeModal(false);
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      form.requester.focus();
+    };
   }
 
   /* ------------------------------------------------------------ 借用提交 */
@@ -311,7 +374,10 @@
       contact: form.contact.value.trim(),
       subject: form.subject.value.trim(),
       note: form.note.value.trim(),
-      password: form.password.value.trim(),
+      record: form.record.checked,
+      waiting_room: form.waiting_room.checked,
+      password_enabled: form.password_enabled.checked,
+      password: form.password_enabled.checked ? form.password.value.trim() : '',
       start_at: startAt,
       duration_minutes: Number(form.duration.value),
     };
@@ -849,10 +915,32 @@
     });
 
     $('#book-form').addEventListener('submit', submitBooking);
+    $('#book-form').querySelector('[name=password_enabled]').addEventListener('change', (e) => {
+      const field = $('#password-field');
+      field.classList.toggle('hidden', !e.target.checked);
+      if (e.target.checked) field.querySelector('input').focus();
+    });
     $('#book-form').addEventListener('input', (e) => {
       e.currentTarget.dataset.touched = '1';
     });
     $('#my-refresh').onclick = () => loadMy().then(() => toast('已刷新'));
+
+    $('#timeline').addEventListener('click', (e) => {
+      const block = e.target.closest('.tl-block');
+      if (block) {
+        const data = state.tlBlocks[Number(block.dataset.block)];
+        if (data) slotSheet(data);
+        return;
+      }
+      const track = e.target.closest('.tl-track');
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = (e.clientX - rect.left) / rect.width;
+      const hourFloat = state.tlStartH + ratio * state.tlSpan;
+      const total = Math.max(0, Math.min(23 * 60 + 55, Math.round(hourFloat * 12) * 5));
+      freeSlotSheet(track.dataset.acc || '这个号', { hour: Math.floor(total / 60), minute: total % 60 });
+    });
 
     $('#tl-prev').onclick = () => {
       const d = new Date(state.tlDate + 'T12:00:00');

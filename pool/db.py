@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS bookings (
     join_url     TEXT    NOT NULL DEFAULT '',
     password     TEXT    NOT NULL DEFAULT '',
     host_key     TEXT    NOT NULL DEFAULT '',
+    record_enabled INTEGER NOT NULL DEFAULT 1,
+    waiting_room INTEGER NOT NULL DEFAULT 0,
     driver       TEXT    NOT NULL DEFAULT '',
     upstream_state TEXT  NOT NULL DEFAULT '',      -- '' | cancelled | cancel_failed | missing
     cancel_error TEXT    NOT NULL DEFAULT '',
@@ -129,6 +131,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             "upstream_state": "TEXT NOT NULL DEFAULT ''",
             "cancel_error": "TEXT NOT NULL DEFAULT ''",
             "synced_at": "TEXT NOT NULL DEFAULT ''",
+            "record_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "waiting_room": "INTEGER NOT NULL DEFAULT 0",
         },
         "accounts": {
             "last_sync_at": "TEXT NOT NULL DEFAULT ''",

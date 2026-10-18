@@ -113,3 +113,52 @@ def test_cancel_requires_meeting_id(monkeypatch):
     with pytest.raises(DriverError) as exc:
         driver.cancel({}, "tok", {"meeting_id": "", "meeting_code": "123456789"})
     assert "meeting_id" in str(exc.value)
+
+
+# --------------------------------------------------------------- 主持人能力开关
+
+
+def base_payload(**kw):
+    payload = {"subject": "例会", "start": "2026-10-20T10:00:00+08:00",
+               "end": "2026-10-20T11:00:00+08:00", "password": "",
+               "timezone": "Asia/Shanghai"}
+    payload.update(kw)
+    return payload
+
+
+def test_args_default_record_on_and_no_password():
+    args = McpDriver()._build_args(base_payload())
+    assert args["auto_record_type"] == "cloud"
+    assert args["auto_in_waiting_room"] is False
+    assert "password" not in args
+
+
+def test_args_record_off_and_waiting_on():
+    args = McpDriver()._build_args(base_payload(record=False, waiting_room=True))
+    assert args["auto_record_type"] == "none"
+    assert args["auto_in_waiting_room"] is True
+
+
+def test_args_boolean_actually_bool_not_string():
+    args = McpDriver()._build_args(base_payload(waiting_room=True))
+    assert isinstance(args["auto_in_waiting_room"], bool)
+
+
+def test_args_keep_password_when_given():
+    args = McpDriver()._build_args(base_payload(password="1234"))
+    assert args["password"] == "1234"
+
+
+def test_args_fallback_when_template_is_old():
+    """老 .env 里没有录制占位符时也要生效。"""
+    from pool.config import SETTINGS
+
+    old = SETTINGS.mcp_args_template
+    try:
+        SETTINGS.mcp_args_template = ('{"subject":"{subject}","start_time":"{start}",'
+                                      '"end_time":"{end}","time_zone":"{timezone}"}')
+        args = McpDriver()._build_args(base_payload(record=False, waiting_room=True))
+        assert args["auto_record_type"] == "none"
+        assert args["auto_in_waiting_room"] is True
+    finally:
+        SETTINGS.mcp_args_template = old

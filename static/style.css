@@ -201,8 +201,12 @@ input::placeholder { color: #aab1bd; }
   background: linear-gradient(180deg, #dbe6ff, #c9daff); border: 1px solid #b9cdff;
   color: var(--brand-ink); font-size: 11px; padding: 3px 6px 0;
   display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  line-height: 17px; cursor: default;
+  line-height: 17px; cursor: pointer; font-family: inherit; text-align: left;
+  appearance: none; -webkit-appearance: none; transition: filter .15s, transform .15s;
 }
+.tl-block:hover { filter: brightness(.97); }
+.tl-block:active { transform: scale(.985); }
+.tl-block:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 .tl-block.done {
   background: #e8ecf3; border-color: #d8dee8; color: #79818f;
 }
@@ -213,6 +217,7 @@ input::placeholder { color: #aab1bd; }
   border: 1px dashed #d9a441; color: #8a5a00;
 }
 
+.tl-legends { display: inline-flex; align-items: center; gap: 12px; }
 .legend { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3); }
 .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .lg-pool { background: linear-gradient(180deg, #dbe6ff, #c9daff); border: 1px solid #b9cdff; }
@@ -235,6 +240,7 @@ input::placeholder { color: #aab1bd; }
   background: var(--red-soft); color: var(--red);
   font-size: 12.5px; padding: 8px 10px; border-radius: 8px; line-height: 1.6;
 }
+.tl-hint { display: none; margin: 0 0 2px; font-size: 12px; color: var(--ink-3); }
 .tl-axis { display: grid; grid-template-columns: 168px 1fr; gap: 12px; margin-top: 6px; }
 .tl-ticks { display: flex; justify-content: space-between; font-size: 11px; color: #a4acb9; }
 
@@ -375,4 +381,60 @@ input::placeholder { color: #aab1bd; }
   .result-actions .btn { flex: 1 1 auto; }
   .filters { justify-content: flex-start; }
   .filters input, .filters select { flex: 1 1 46%; min-width: 0; }
+}
+
+/* 主持人选项 */
+.options {
+  border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px;
+  background: #fbfcfe; margin-bottom: 14px;
+}
+.opt-head {
+  font-size: 12px; color: var(--ink-3); letter-spacing: .04em;
+  padding: 10px 0 4px;
+}
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 0; border-top: 1px solid #f1f4f8; cursor: pointer;
+}
+.switch-row:first-of-type { border-top: 0; }
+.switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.switch-text b { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.switch-text i { font-style: normal; font-size: 12px; color: var(--ink-3); line-height: 1.4; }
+.switch-row input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-ui {
+  flex: 0 0 auto; width: 42px; height: 25px; border-radius: 99px;
+  background: #dde2ea; position: relative; transition: background .18s;
+}
+.switch-ui::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(16,24,40,.2);
+  transition: transform .18s;
+}
+.switch-row input:checked + .switch-ui { background: var(--brand); }
+.switch-row input:checked + .switch-ui::after { transform: translateX(17px); }
+.switch-row input:focus-visible + .switch-ui { outline: 2px solid var(--brand); outline-offset: 2px; }
+.password-field { margin: 4px 0 12px; }
+
+/* 移动端：甘特图横向滚动 + 色块不显示文字 */
+@media (max-width: 720px) {
+  /* 卡片头：标题不压缩，工具行单独换行 */
+  .timeline-card .card-head { flex-direction: column; align-items: stretch; gap: 8px; }
+  .timeline-card .card-head h2 { white-space: nowrap; }
+  .timeline-tools { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .tl-nav { display: inline-flex; align-items: center; gap: 8px; }
+  .tl-nav #tl-date { min-width: 84px; text-align: center; }
+  .timeline-tools .legend { font-size: 11.5px; }
+
+  /* 甘特图：横向滚动，账号名吸附在左侧 */
+  #timeline { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; }
+  #timeline > * { min-width: 700px; }
+  .tl-row, .tl-axis { grid-template-columns: 96px 1fr; gap: 8px; }
+  .tl-name { position: sticky; left: 0; background: #fff; z-index: 2; padding-right: 6px; font-size: 11.5px; }
+  .tl-axis > div:first-child { position: sticky; left: 0; background: #fff; z-index: 2; }
+  .tl-track { height: 36px; }
+  .tl-block { font-size: 0; padding: 0; top: 4px; bottom: 4px; }
+  .tl-block:active { filter: brightness(.92); }
+  .tl-hint { display: block; margin-top: 8px; }
+  .tl-axis { display: grid; margin-top: 8px; }
+  .options { padding: 4px 12px; }
 }

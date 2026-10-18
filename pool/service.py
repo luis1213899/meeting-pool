@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import secrets
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
@@ -100,6 +101,8 @@ def booking_row(row: sqlite3.Row, account_label: str = "") -> dict:
         "password": row["password"],
         "host_key": row["host_key"] if "host_key" in row.keys() else "",
         "driver": row["driver"],
+        "record": bool(row["record_enabled"]) if "record_enabled" in row.keys() else True,
+        "waiting_room": bool(row["waiting_room"]) if "waiting_room" in row.keys() else False,
         "upstream_state": row["upstream_state"] if "upstream_state" in row.keys() else "",
         "cancel_error": row["cancel_error"] if "cancel_error" in row.keys() else "",
         "fail_reason": row["fail_reason"],
@@ -246,6 +249,15 @@ def delete_account(conn: sqlite3.Connection, account_id: int, actor: str = "admi
     ).fetchone()
     if live and live["c"]:
         raise ValueError("该账号还有未结束的借用记录，请先结束或取消")
+    # 有历史记录时不能硬删（外键会挡住，而且历史不该丢），给出去向明确的提示
+    history = conn.execute(
+        "SELECT COUNT(*) c FROM bookings WHERE account_id=?", (account_id,)
+    ).fetchone()
+    if history and history["c"]:
+        raise ValueError(
+            f"该账号有 {history['c']} 条历史借用记录，删掉会一起丢失。"
+            f"建议改成「暂停」（保留记录且不再参与分号）。"
+        )
     label = conn.execute("SELECT label FROM accounts WHERE id=?", (account_id,)).fetchone()
     conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
     audit(conn, "account.delete", actor, f"account:{account_id}", label["label"] if label else "", ip)
@@ -521,6 +533,17 @@ def _validate(payload: dict, cfg: dict) -> dict:
     if start.hour < cfg["work_hour_start"] or end.hour > cfg["work_hour_end"] or \
             (end.hour == cfg["work_hour_end"] and end.minute > 0):
         raise ValueError(f"可借时段为每天 {cfg['work_hour_start']}:00–{cfg['work_hour_end']}:00")
+    # 主持人能力：默认开录制、默认不设密码
+    record = bool(payload.get("record", True))
+    waiting_room = bool(payload.get("waiting_room", False))
+    password_enabled = bool(payload.get("password_enabled", False))
+    password = (payload.get("password") or "").strip()
+    if password_enabled:
+        if not re.fullmatch(r"\d{4,6}", password):
+            raise ValueError("会议密码要 4–6 位数字")
+    else:
+        password = ""
+
     return {
         "requester": requester,
         "dept": (payload.get("dept") or "").strip()[:30],
@@ -530,7 +553,9 @@ def _validate(payload: dict, cfg: dict) -> dict:
         "start": start,
         "end": end,
         "duration": duration,
-        "password": (payload.get("password") or "").strip()[:6],
+        "password": password,
+        "record": record,
+        "waiting_room": waiting_room,
         "timezone": "Asia/Shanghai",
     }
 
@@ -547,9 +572,6 @@ def create_booking(payload: dict, ip: str = "") -> dict:
             used = _weekly_used(conn, data["requester"])
             if used >= cfg["max_per_week"]:
                 raise ValueError(f"{data['requester']} 本周已借 {used} 次，达到上限（{cfg['max_per_week']} 次/周）")
-        if not data["password"]:
-            data["password"] = f"{secrets.randbelow(900000) + 100000}"
-
         tried: list[str] = []
         last_error = ""
         for _attempt in range(3):
@@ -566,11 +588,13 @@ def create_booking(payload: dict, ip: str = "") -> dict:
                 manage_token = secrets.token_urlsafe(18)
                 cur = conn.execute(
                     """INSERT INTO bookings(account_id, requester, dept, contact, subject, start_at,
-                         end_at, status, password, driver, manage_token, created_at, updated_at)
-                       VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?,?)""",
+                         end_at, status, password, driver, manage_token, created_at, updated_at,
+                         record_enabled, waiting_room)
+                       VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?)""",
                     (account["id"], data["requester"], data["dept"], data["contact"], data["subject"],
                      iso(data["start"]), iso(data["end"]), data["password"], account["driver"],
-                     manage_token, iso(now()), iso(now())),
+                     manage_token, iso(now()), iso(now()),
+                     1 if data["record"] else 0, 1 if data["waiting_room"] else 0),
                 )
                 booking_id = int(cur.lastrowid)
                 conn.execute("COMMIT")
@@ -592,6 +616,8 @@ def create_booking(payload: dict, ip: str = "") -> dict:
                         "start": iso(data["start"]),
                         "end": iso(data["end"]),
                         "password": data["password"],
+                        "record": data["record"],
+                        "waiting_room": data["waiting_room"],
                         "timezone": data["timezone"],
                     },
                 )
@@ -611,9 +637,10 @@ def create_booking(payload: dict, ip: str = "") -> dict:
 
             conn.execute(
                 """UPDATE bookings SET status='pending', meeting_code=?, meeting_id=?, join_url=?,
-                     password=?, host_key=?, raw=?, updated_at=? WHERE id=?""",
+                     password=?, host_key=?, raw=?, record_enabled=?, updated_at=? WHERE id=?""",
                 (result.meeting_code, result.meeting_id, result.join_url,
                  result.password or data["password"], result.host_key, result.raw,
+                 1 if getattr(result, "record_enabled", True) else 0,
                  iso(now()), booking_id),
             )
             row = conn.execute("SELECT * FROM bookings WHERE id=?", (booking_id,)).fetchone()

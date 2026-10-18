@@ -96,7 +96,9 @@ def test_booking_allocates_and_returns_code():
     assert booking["account_id"] == acc["id"]
     assert len(booking["meeting_code"]) == 9
     assert booking["join_url"].endswith(booking["meeting_code"])
-    assert booking["password"] and len(booking["password"]) == 6
+    assert booking["password"] == ""          # 默认不设密码
+    assert booking["record"] is True          # 默认开录制
+    assert "入会密码" not in booking["share_text"]
     assert "客户沟通" in booking["share_text"]
     assert booking["manage_token"]
 
@@ -256,6 +258,13 @@ def test_driver_failure_falls_back_to_next_account(monkeypatch):
 
 def test_reap_promotes_and_closes():
     make_account()
+    # 让用例与本地时间无关：临时把可借时段放宽到全天
+    conn = connect()
+    try:
+        from pool.db import update_settings
+        update_settings(conn, {"work_hour_start": 0, "work_hour_end": 24})
+    finally:
+        conn.close()
     start = service.now() + timedelta(minutes=1)
     booking = service.create_booking({"requester": "张三", "subject": "马上开始",
                                       "start_at": start.isoformat(), "duration_minutes": 15})
@@ -282,3 +291,66 @@ def test_csv_export_contains_booking():
                             "start_at": tomorrow(10).isoformat(), "duration_minutes": 60})
     csv_text = service.export_bookings_csv()
     assert "导出测试" in csv_text and "预约ID" in csv_text
+
+
+# --------------------------------------------------------------------- 主持人能力
+
+
+def test_password_only_when_requested():
+    make_account()
+    start = tomorrow(11)
+    plain = service.create_booking({"requester": "张三", "subject": "无密码",
+                                    "start_at": start.isoformat(), "duration_minutes": 30})
+    assert plain["password"] == ""
+
+    with_pass = service.create_booking({
+        "requester": "李四", "subject": "有密码",
+        "start_at": (start + timedelta(hours=2)).isoformat(), "duration_minutes": 30,
+        "password_enabled": True, "password": "246810",
+    })
+    assert with_pass["password"] == "246810"
+    assert "入会密码：246810" in with_pass["share_text"]
+
+
+def test_bad_password_rejected():
+    make_account()
+    with pytest.raises(ValueError) as exc:
+        service.create_booking({"requester": "张三", "subject": "密码不对",
+                                "start_at": tomorrow(12).isoformat(), "duration_minutes": 30,
+                                "password_enabled": True, "password": "ab"})
+    assert "4–6 位数字" in str(exc.value)
+
+
+def test_record_and_waiting_room_persisted():
+    make_account()
+    booking = service.create_booking({
+        "requester": "张三", "subject": "录屏会",
+        "start_at": tomorrow(13).isoformat(), "duration_minutes": 30,
+        "record": False, "waiting_room": True,
+    })
+    assert booking["record"] is False
+    assert booking["waiting_room"] is True
+
+
+def test_delete_account_with_history_is_refused():
+    acc = make_account()
+    booking = service.create_booking({"requester": "张三", "subject": "留痕",
+                                      "start_at": tomorrow(14).isoformat(), "duration_minutes": 30})
+    service.cancel_booking(booking["id"], token=booking["manage_token"])  # 变成已结束的历史记录
+    conn = connect()
+    try:
+        with pytest.raises(ValueError) as exc:
+            service.delete_account(conn, acc["id"])
+        assert "暂停" in str(exc.value)
+    finally:
+        conn.close()
+
+
+def test_delete_clean_account_works():
+    acc = make_account()
+    conn = connect()
+    try:
+        service.delete_account(conn, acc["id"])
+        assert conn.execute("SELECT COUNT(*) c FROM accounts").fetchone()["c"] == 0
+    finally:
+        conn.close()
