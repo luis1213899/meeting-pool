@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import time
 from collections import defaultdict, deque
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import service
@@ -19,13 +20,18 @@ from .db import audit, connect, get_settings, init_db
 from .drivers import diagnose
 from .security import check_admin, decrypt_secret, sign_session, verify_session
 
+logger = logging.getLogger("pool.api")
+
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 COOKIE = "pool_admin"
 
+_WAL_INTERVAL = 4 * 3600  # WAL checkpoint 间隔（秒）
+
 
 async def _reaper() -> None:
-    """后台推进预约状态，并按间隔跟腾讯会议对账（拉上游已有会议/核验取消）。"""
-    last_sync = time.time()  # 启动时不立刻对账，等一个间隔，避免拖慢启动
+    """后台推进预约状态，定期对账，定期触发 WAL checkpoint。"""
+    last_sync = time.time()
+    last_wal = time.time()
     while True:
         try:
             await asyncio.to_thread(service.reap)
@@ -36,7 +42,26 @@ async def _reaper() -> None:
                 conn.close()
             if interval and time.time() - last_sync >= interval:
                 last_sync = time.time()
-                await asyncio.to_thread(service.sync_all, "scheduler")
+                logger.info("pool.sync.start")
+                try:
+                    result = await asyncio.to_thread(service.sync_all, "scheduler")
+                    logger.info("pool.sync.done accounts=%d imported=%d missing=%d cancel_failed=%d errors=%d",
+                                result.get("accounts", 0), result.get("imported", 0),
+                                result.get("missing", 0), result.get("cancel_failed", 0),
+                                len(result.get("errors", [])))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("pool.sync.error error=%s", exc)
+            if time.time() - last_wal >= _WAL_INTERVAL:
+                last_wal = time.time()
+                try:
+                    conn2 = connect()
+                    try:
+                        conn2.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    finally:
+                        conn2.close()
+                    logger.info("pool.wal_checkpoint.done")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("pool.wal_checkpoint.error error=%s", exc)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(30)
@@ -129,8 +154,15 @@ async def create_booking(request: Request):
     _rate_limit("book", ip or "unknown")
     payload = await _body(request)
     try:
-        return service.create_booking(payload, ip=ip)
+        booking = service.create_booking(payload, ip=ip)
+        logger.info("booking.create id=%s account_id=%s requester=%s subject=%s start=%s",
+                    booking.get("id"), booking.get("account_id"),
+                    payload.get("requester", ""), payload.get("subject", ""),
+                    payload.get("start_at", ""))
+        return booking
     except ValueError as exc:
+        logger.warning("booking.create.failed ip=%s requester=%s reason=%s",
+                       ip, payload.get("requester", ""), exc)
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
@@ -149,8 +181,11 @@ async def cancel_booking_public(booking_id: int, request: Request):
     payload = await _body(request) if request.headers.get("content-length") else {}
     token = payload.get("token") if payload else None
     try:
-        return service.cancel_booking(booking_id, token=token, ip=_client_ip(request))
+        result = service.cancel_booking(booking_id, token=token, ip=_client_ip(request))
+        logger.info("booking.cancel id=%s by=user", booking_id)
+        return result
     except ValueError as exc:
+        logger.warning("booking.cancel.failed id=%s reason=%s", booking_id, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
@@ -333,8 +368,13 @@ def admin_retry_cancel(booking_id: int, request: Request, username: str = Depend
 def admin_sync(username: str = Depends(require_admin)):
     """立即跟腾讯会议对账：拉上游会议、核验取消是否真的生效。"""
     try:
-        return service.sync_all(actor=f"admin:{username}")
+        result = service.sync_all(actor=f"admin:{username}")
+        logger.info("admin.sync.done actor=%s accounts=%d imported=%d missing=%d cancel_failed=%d",
+                    username, result.get("accounts", 0), result.get("imported", 0),
+                    result.get("missing", 0), result.get("cancel_failed", 0))
+        return result
     except Exception as exc:  # noqa: BLE001
+        logger.error("admin.sync.error actor=%s error=%s", username, exc)
         raise HTTPException(status_code=502, detail=f"对账失败：{exc}") from None
 
 
@@ -370,12 +410,135 @@ async def admin_set_config(request: Request, username: str = Depends(require_adm
 
 @app.get("/api/admin/export.csv")
 def admin_export(date_from: str = "", date_to: str = "", username: str = Depends(require_admin)):
-    csv_text = service.export_bookings_csv(date_from, date_to)
-    return PlainTextResponse(
-        "\ufeff" + csv_text,
+    gen = service.stream_bookings_csv(date_from, date_to)
+    return StreamingResponse(
+        gen,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="meeting-pool.csv"'},
     )
+
+
+@app.get("/booking/{booking_id}", response_class=Response)
+def booking_detail_page(booking_id: int, token: Optional[str] = None):
+    """可分享的预约详情页：发给与会者查看会议信息和实时状态。"""
+    try:
+        booking = service.get_booking(booking_id, token)
+    except ValueError:
+        return Response(content=_detail_error("预约不存在"), media_type="text/html; charset=utf-8", status_code=404)
+    except PermissionError:
+        return Response(content=_detail_error("链接无效或已过期"), media_type="text/html; charset=utf-8", status_code=403)
+    return Response(content=_detail_html(booking), media_type="text/html; charset=utf-8")
+
+
+def _detail_error(msg: str) -> str:
+    return f"""<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>无法查看</title>
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  display:grid;place-items:center;min-height:100vh;margin:0;background:#f6f7f9;color:#333a47;}}
+.box{{text-align:center;padding:40px 24px;}}h1{{font-size:18px;margin:0 0 8px;}}
+p{{color:#6b7585;font-size:14px;margin:0;}}</style></head>
+<body><div class="box"><h1>😕 {msg}</h1><p>请向会议发起人索取正确的分享链接。</p></div></body></html>"""
+
+
+def _detail_html(b: dict) -> str:
+    from datetime import datetime as _dt
+    def _fmt(iso: str) -> str:
+        try:
+            d = _dt.fromisoformat(iso)
+            return f"{d.month}月{d.day}日 {d.hour:02d}:{d.minute:02d}"
+        except Exception:
+            return iso[:16]
+
+    status_map = {"pending": ("待开始", "#1f6bff"), "active": ("进行中", "#10a05a"),
+                  "done": ("已结束", "#6b7585"), "cancelled": ("已取消", "#6b7585"), "failed": ("失败", "#d92d20")}
+    status_text, status_color = status_map.get(b.get("status", ""), ("未知", "#6b7585"))
+    start = _fmt(b.get("start_at", ""))
+    end_d = b.get("end_at", "")
+    end_time = ""
+    try:
+        d = _dt.fromisoformat(end_d)
+        end_time = f"{d.hour:02d}:{d.minute:02d}"
+    except Exception:
+        pass
+    join_url = b.get("join_url", "") or ""
+    meeting_code = b.get("meeting_code", "") or "—"
+    password = b.get("password", "") or ""
+    subject = b.get("subject", "") or "会议"
+    requester = b.get("requester", "") or ""
+    account_label = b.get("account_label", "") or ""
+    host_key = b.get("host_key", "") or ""
+
+    qr_script = f'<script>if(window.QR){{var c=document.getElementById("qr");if(c)QR.toCanvas("{join_url}",c,6);}}</script>' if join_url else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{subject} · 会议详情</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:#f6f7f9;color:#171c26;font-size:14px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;}}
+.wrap{{max-width:480px;margin:0 auto;padding:24px 16px 48px;}}
+.card{{background:#fff;border:1px solid #e2e5ec;border-radius:16px;
+  padding:22px 20px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px -12px rgba(16,24,40,.1);}}
+.card+.card{{margin-top:12px;}}
+.badge{{display:inline-block;padding:3px 10px;border-radius:99px;
+  font-size:12px;font-weight:600;color:#fff;background:{status_color};margin-bottom:10px;}}
+h1{{font-size:20px;font-weight:700;line-height:1.3;margin-bottom:4px;}}
+.sub{{font-size:13px;color:#6b7585;margin-bottom:16px;}}
+.code-wrap{{text-align:center;margin:16px 0 4px;}}
+.code{{font-size:36px;font-weight:700;letter-spacing:.06em;font-variant-numeric:tabular-nums;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#f6f7f9;border:1px solid #e2e5ec;border-radius:12px;
+  display:inline-block;padding:8px 20px;}}
+.code-hint{{font-size:12px;color:#9aa2b2;margin-top:4px;}}
+.kv{{display:grid;grid-template-columns:80px 1fr;gap:7px 12px;font-size:13.5px;margin-top:16px;}}
+.kv dt{{color:#6b7585;}}
+.kv dd{{color:#171c26;word-break:break-all;}}
+.kv dd a{{color:#1f6bff;text-decoration:none;}}
+.kv dd a:hover{{text-decoration:underline;}}
+.btn{{display:block;width:100%;padding:13px;border-radius:10px;border:none;
+  background:#1f6bff;color:#fff;font-size:15px;font-weight:600;
+  font-family:inherit;cursor:pointer;text-align:center;text-decoration:none;
+  margin-top:20px;transition:.15s;}}
+.btn:hover{{background:#0b5cff;}}
+.qr-wrap{{text-align:center;padding:12px 0 4px;}}
+.qr-lbl{{font-size:12px;color:#9aa2b2;margin-bottom:8px;}}
+#qr{{border-radius:8px;image-rendering:pixelated;border:1px solid #e2e5ec;background:#fff;padding:4px;}}
+.qr-hint{{font-size:11.5px;color:#9aa2b2;margin-top:6px;}}
+.foot{{text-align:center;font-size:12px;color:#9aa2b2;margin-top:20px;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <span class="badge">{status_text}</span>
+    <h1>{subject}</h1>
+    <div class="sub">{start}{"–"+end_time if end_time else ""}{" · "+requester if requester else ""}</div>
+    <div class="code-wrap">
+      <div class="code">{meeting_code}</div>
+      <div class="code-hint">会议号</div>
+    </div>
+    <dl class="kv">
+      {"<dt>入会密码</dt><dd><b>"+password+"</b></dd>" if password else "<dt>入会密码</dt><dd>未设置</dd>"}
+      {"<dt>入会链接</dt><dd><a href='"+join_url+"' target='_blank' rel='noopener'>点击入会</a></dd>" if join_url else ""}
+      {"<dt>发起人</dt><dd>"+requester+"</dd>" if requester else ""}
+      {"<dt>账号</dt><dd>"+account_label+"</dd>" if account_label else ""}
+      {"<dt>主持人密钥</dt><dd>"+host_key+"<br><small style='color:#9aa2b2'>仅主持人使用</small></dd>" if host_key else ""}
+    </dl>
+    {"<a class='btn' href='"+join_url+"' target='_blank' rel='noopener'>立即入会</a>" if join_url else ""}
+  </div>
+  {"<div class='card'><div class='qr-wrap'><div class='qr-lbl'>扫码入会</div><canvas id='qr'></canvas><div class='qr-hint'>手机扫码直接进入腾讯会议</div></div></div>" if join_url else ""}
+  <div class="foot">由会议号池生成 · 仅供本次会议使用</div>
+</div>
+{"<script src='/qr.js'></script>" if join_url else ""}
+{qr_script}
+</body>
+</html>"""
 
 
 # --------------------------------------------------------------------------- 静态资源

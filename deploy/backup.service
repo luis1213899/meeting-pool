@@ -1,0 +1,11 @@
+[Unit]
+Description=Meeting Pool SQLite backup (one-shot)
+After=network.target
+
+[Service]
+Type=oneshot
+User=meeting
+WorkingDirectory=/opt/meeting-pool
+ExecStart=/bin/bash /opt/meeting-pool/deploy/backup.sh
+StandardOutput=journal
+StandardError=journal

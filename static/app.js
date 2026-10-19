@@ -18,6 +18,21 @@
     driver: 'mcp',
   };
 
+  /* ------------------------------------------------------------ 主题切换 */
+
+  function initTheme() {
+    const saved = localStorage.getItem('pool.theme'); // 'dark' | 'light' | null
+    if (saved) document.documentElement.classList.add(saved);
+    $('#theme-btn').addEventListener('click', () => {
+      const root = document.documentElement;
+      const isDark = root.classList.contains('dark') ||
+        (!root.classList.contains('light') && matchMedia('(prefers-color-scheme: dark)').matches);
+      root.classList.remove('dark', 'light');
+      root.classList.add(isDark ? 'light' : 'dark');
+      localStorage.setItem('pool.theme', isDark ? 'light' : 'dark');
+    });
+  }
+
   /* ------------------------------------------------------------ 工具 */
 
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => (
@@ -33,9 +48,10 @@
 
   function isoDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 
-  function toast(msg, ms = 2200) {
+  function toast(msg, ms = 2200, type = '') {
     const el = $('#toast');
     el.textContent = msg;
+    el.className = 'toast' + (type ? ` t-${type}` : '');
     el.classList.add('show');
     clearTimeout(toast._t);
     toast._t = setTimeout(() => el.classList.remove('show'), ms);
@@ -65,17 +81,21 @@
       } else {
         const ta = document.createElement('textarea');
         ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); ta.remove();
       }
-      toast(label);
+      toast(label, 2200, 'ok');
     } catch (e) {
-      toast('复制失败，请手动选中');
+      toast('复制失败，请手动选中', 2200, 'err');
     }
+  }
+
+  function copyWithFeedback(btn, text, label = '已复制') {
+    copy(text, label);
+    btn.dataset.copied = '1';
+    clearTimeout(btn._ct);
+    btn._ct = setTimeout(() => { delete btn.dataset.copied; }, 3000);
   }
 
   function readStore() {
@@ -178,13 +198,27 @@
           <button class="btn tiny" data-act="copy-link">复制入会链接</button>
           <button class="btn tiny danger" data-act="cancel">结束这场会</button>
         </div>
+        ${booking.join_url ? `<div class="qr-section">
+          <div class="qr-label">扫码入会</div>
+          <canvas class="qr-canvas" id="qr-canvas" title="扫描二维码入会"></canvas>
+          <div class="qr-hint">手机扫码直接入腾讯会议</div>
+        </div>` : ''}
         <div class="share-box" id="share-box">${esc(booking.share_text || '')}</div>
       </div>`;
 
+    // 渲染二维码
+    if (booking.join_url && window.QR) {
+      const canvas = $('#qr-canvas');
+      if (canvas) {
+        const ok = QR.toCanvas(booking.join_url, canvas, 5);
+        if (!ok) canvas.closest('.qr-section').remove();
+      }
+    }
+
     const share = booking.share_text || '';
-    card.querySelector('[data-act="copy-code"]').onclick = () => copy(booking.meeting_code, '会议号已复制');
-    card.querySelector('[data-act="copy-all"]').onclick = () => copy(share, '邀请文案已复制，可直接发群里');
-    card.querySelector('[data-act="copy-link"]').onclick = () => copy(booking.join_url || share, '入会链接已复制');
+    card.querySelector('[data-act="copy-code"]').onclick = (e) => copyWithFeedback(e.currentTarget, booking.meeting_code, '会议号已复制');
+    card.querySelector('[data-act="copy-all"]').onclick = (e) => copyWithFeedback(e.currentTarget, share, '邀请文案已复制，可直接发群里');
+    card.querySelector('[data-act="copy-link"]').onclick = (e) => copyWithFeedback(e.currentTarget, booking.join_url || share, '入会链接已复制');
     card.querySelector('[data-act="cancel"]').onclick = () => cancelMyBooking(booking.id, booking.manage_token, true);
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -402,6 +436,40 @@
 
   /* ------------------------------------------------------------ 借用提交 */
 
+  function validateField(input, validator) {
+    const field = input.closest('.field');
+    if (!field) return true;
+    const msg = validator(input.value);
+    let errEl = field.querySelector('.field-error');
+    if (msg) {
+      field.classList.add('has-error');
+      if (!errEl) {
+        errEl = document.createElement('div');
+        errEl.className = 'field-error';
+        field.appendChild(errEl);
+      }
+      errEl.textContent = msg;
+      return false;
+    }
+    field.classList.remove('has-error');
+    if (errEl) errEl.remove();
+    return true;
+  }
+
+  function bindInlineValidation() {
+    const form = $('#book-form');
+    const validators = {
+      requester: (v) => v.trim() ? '' : '请填写你的名字',
+      subject:   (v) => v.trim() ? '' : '请填写会议主题',
+      date: (v) => v ? '' : '请选择日期',
+      time: (v) => v ? '' : '请选择开始时间',
+    };
+    Object.entries(validators).forEach(([name, fn]) => {
+      const el = form.elements[name];
+      if (el) el.addEventListener('blur', () => validateField(el, fn));
+    });
+  }
+
   async function submitBooking(ev) {
     ev.preventDefault();
     const form = ev.target;
@@ -409,6 +477,18 @@
     const note = $('#form-note');
     note.classList.remove('err');
     form.dataset.touched = '1';
+
+    // Run all inline validators before submit
+    let valid = true;
+    const validators = {
+      requester: (v) => v.trim() ? '' : '请填写你的名字',
+      subject:   (v) => v.trim() ? '' : '请填写会议主题',
+    };
+    Object.entries(validators).forEach(([name, fn]) => {
+      const el = form.elements[name];
+      if (el && !validateField(el, fn)) valid = false;
+    });
+    if (!valid) return;
 
     const startAt = `${form.date.value}T${form.time.value}:00+08:00`;
     const payload = {
@@ -424,26 +504,21 @@
       start_at: startAt,
       duration_minutes: Number(form.duration.value),
     };
-    if (!payload.requester || !payload.subject) {
-      note.textContent = '名字和会议主题要填一下';
-      note.classList.add('err');
-      return;
-    }
     btn.disabled = true;
-    btn.textContent = '正在分配号码…';
+    btn.classList.add('is-loading');
     try {
       const booking = await api('/api/bookings', { method: 'POST', body: JSON.stringify(payload) });
       remember(booking);
       renderResult(booking);
-      toast('号码到手，可以直接发群里了');
+      toast('号码到手，可以直接发群里了', 2200, 'ok');
       await Promise.all([loadState(), loadMy()]);
     } catch (e) {
       note.textContent = e.message;
       note.classList.add('err');
-      toast(e.message, 3200);
+      toast(e.message, 3200, 'err');
     } finally {
       btn.disabled = false;
-      btn.textContent = '借一个会议号';
+      btn.classList.remove('is-loading');
     }
   }
 
@@ -750,31 +825,69 @@
   }
 
   function renderCharts(o) {
+    const usageEl = $('#usage-chart');
+    const heatEl = $('#hour-chart');
+
+    // --- 横向 SVG 条形图：近 7 天账号使用 ---
     const hasUsage = o.account_usage.some((x) => x.week_count > 0);
     if (!hasUsage) {
-      $('#usage-chart').innerHTML = '<p class="muted small">近 7 天还没有借用记录。员工借号后，这里会显示每个号被用了多少次。</p>';
+      usageEl.innerHTML = '<p class="muted small">近 7 天还没有借用记录。员工借号后，这里会显示每个号被用了多少次。</p>';
     } else {
-      const maxWeek = Math.max(1, ...o.account_usage.map((x) => x.week_count));
-      $('#usage-chart').innerHTML = o.account_usage.map((x) => `
-        <div class="bar-row">
-          <div class="tl-name" title="${esc(x.label)}">${esc(x.label)}</div>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(x.week_count / maxWeek * 100)}%"></div></div>
-          <div class="num">${x.week_count} 场</div>
-        </div>`).join('');
+      const items = o.account_usage.slice(0, 10);
+      const maxWeek = Math.max(1, ...items.map((x) => x.week_count));
+      const rowH = 28; const gap = 6; const labelW = 120; const numW = 38; const paddingR = 8;
+      const svgW = 400; const barAreaW = svgW - labelW - numW - paddingR;
+      const svgH = items.length * (rowH + gap);
+
+      const rows = items.map((x, i) => {
+        const barW = Math.max(4, Math.round((x.week_count / maxWeek) * barAreaW));
+        const y = i * (rowH + gap);
+        const cy = y + rowH / 2;
+        return `
+          <text x="${labelW - 8}" y="${cy + 4.5}" text-anchor="end" font-size="11.5" fill="var(--ink-2)"
+            class="tl-name" style="overflow:hidden">${esc(x.label.slice(0, 14))}</text>
+          <rect x="${labelW}" y="${y + 6}" width="${barAreaW}" height="${rowH - 12}" rx="4" fill="var(--gray-100)"/>
+          <rect x="${labelW}" y="${y + 6}" width="${barW}" height="${rowH - 12}" rx="4" fill="var(--brand-600)"
+            opacity="${x.status === 'active' ? '1' : '.45'}">
+            <title>${esc(x.label)}: ${x.week_count} 场</title>
+          </rect>
+          <text x="${labelW + barAreaW + 6}" y="${cy + 4.5}" font-size="11.5" fill="var(--ink-3)"
+            font-variant-numeric="tabular-nums">${x.week_count}</text>`;
+      }).join('');
+
+      usageEl.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${svgW} ${svgH}" style="height:${svgH}px">${rows}</svg>`;
     }
 
+    // --- SVG 热力图：借用时段分布 (0-23 时) ---
     const totalHours = o.hour_heat.reduce((sum, x) => sum + x.count, 0);
     if (!totalHours) {
-      $('#hour-chart').innerHTML = '<p class="muted small">还没有数据。等积累几场会后，这里能看出大家都爱在几点开会。</p>';
+      heatEl.innerHTML = '<p class="muted small">还没有数据。等积累几场会后，这里能看出大家都爱在几点开会。</p>';
       return;
     }
     const maxHour = Math.max(1, ...o.hour_heat.map((x) => x.count));
-    $('#hour-chart').innerHTML = o.hour_heat.map((x) => `
-      <div class="heat-col" title="${pad(x.hour)}:00 · ${x.count} 场">
-        <div class="heat-bar" style="height:${Math.max(3, Math.round(x.count / maxHour * 96))}px;background:${x.count ? 'linear-gradient(180deg,#8fb4ff,#3b74ff)' : '#eef1f6'}"></div>
-        <div class="heat-lbl">${pad(x.hour)}</div>
-      </div>`).join('');
+    const colW = 16; const colGap = 4; const barMaxH = 72; const lblH = 18; const pad = 4;
+    const totalW = 24 * (colW + colGap) - colGap;
+    const svgH2 = barMaxH + lblH + pad;
+
+    const heatBars = o.hour_heat.map((x) => {
+      const barH = x.count ? Math.max(4, Math.round((x.count / maxHour) * barMaxH)) : 0;
+      const xPos = x.hour * (colW + colGap);
+      const alpha = x.count ? (0.2 + 0.8 * x.count / maxHour).toFixed(2) : '0';
+      return `
+        <rect x="${xPos}" y="${barMaxH - barH + pad}" width="${colW}" height="${barH}"
+          rx="3" fill="var(--brand-600)" opacity="${alpha}">
+          <title>${pad2(x.hour)}:00 · ${x.count} 场</title>
+        </rect>
+        <text x="${xPos + colW / 2}" y="${svgH2}" text-anchor="middle" font-size="9.5"
+          fill="var(--ink-3)" font-variant-numeric="tabular-nums">
+          ${x.hour % 3 === 0 ? pad2(x.hour) : ''}
+        </text>`;
+    }).join('');
+
+    heatEl.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${totalW} ${svgH2}" style="height:${svgH2}px;width:100%">${heatBars}</svg>`;
   }
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
 
   function renderConfig(cfg) {
     const form = $('#config-form');
@@ -1137,13 +1250,15 @@
   /* ------------------------------------------------------------ 启动 */
 
   async function boot() {
+    initTheme();
     bindEvents();
+    bindInlineValidation();
     $('#foot-time').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
     try {
       await loadState();
       await loadMy();
     } catch (e) {
-      toast(`加载失败：${e.message}`, 3600);
+      toast(`加载失败：${e.message}`, 3600, 'err');
     }
     const hash = location.hash.replace('#/', '');
     switchView(hash || 'borrow');

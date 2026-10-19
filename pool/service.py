@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import secrets
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Generator, Optional
+
+logger = logging.getLogger("pool.service")
 
 from .db import TZ, audit, connect, get_settings, update_settings
 from .drivers import DriverError, get_driver
@@ -376,23 +380,44 @@ def sync_account(conn: sqlite3.Connection, account_id: int, actor: str = "system
 
 
 def sync_all(actor: str = "system") -> dict:
+    """并行对账所有活跃 MCP 账号，最多 4 个并发（各自独立 SQLite 连接）。"""
     conn = connect()
     try:
         rows = conn.execute(
             "SELECT id FROM accounts WHERE status='active' AND driver='mcp' ORDER BY id"
         ).fetchall()
-        results = [sync_account(conn, r["id"], actor) for r in rows]
-        return {
-            "accounts": len(results),
-            "imported": sum(r["imported"] for r in results),
-            "missing": sum(r["missing"] for r in results),
-            "cancel_failed": sum(r["cancel_failed"] for r in results),
-            "errors": [{"label": r["label"], "error": r["error"]} for r in results if r["error"]
-                       and r["error"] != "非 MCP 账号，无需对账"],
-            "detail": results,
-        }
+        account_ids = [r["id"] for r in rows]
     finally:
         conn.close()
+
+    def _sync_one(account_id: int) -> dict:
+        c = connect()
+        try:
+            return sync_account(c, account_id, actor)
+        finally:
+            c.close()
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_sync_one, aid): aid for aid in account_ids}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001
+                aid = futures[future]
+                logger.warning("pool.sync.account.error account_id=%s error=%s", aid, exc)
+                results.append({"account_id": aid, "label": "", "imported": 0,
+                                 "missing": 0, "cancel_failed": 0, "error": str(exc)})
+
+    return {
+        "accounts": len(results),
+        "imported": sum(r["imported"] for r in results),
+        "missing": sum(r["missing"] for r in results),
+        "cancel_failed": sum(r["cancel_failed"] for r in results),
+        "errors": [{"label": r["label"], "error": r["error"]} for r in results if r["error"]
+                   and r["error"] != "非 MCP 账号，无需对账"],
+        "detail": results,
+    }
 
 
 def external_meetings(day: Optional[str] = None, account_id: Optional[int] = None) -> list[dict]:
@@ -1048,28 +1073,42 @@ def list_bookings(day: Optional[str] = None, status: Optional[str] = None,
 
 
 def export_bookings_csv(day_from: str = "", day_to: str = "") -> str:
+    """保留旧接口供测试引用；生产路径已改用 stream_bookings_csv。"""
+    return "".join(stream_bookings_csv(day_from, day_to))
+
+
+def stream_bookings_csv(day_from: str = "", day_to: str = "") -> Generator[str, None, None]:
+    """流式生成 CSV，避免大数据量时内存峰值高。首行含 BOM 供 Excel 直接打开。"""
+    header_row = ["预约ID", "主题", "借用人", "部门", "联系方式", "账号", "开始", "结束",
+                  "状态", "会议号", "入会链接", "密码", "创建时间"]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    # BOM
+    buf.write("﻿")
+    writer.writerow(header_row)
+    yield buf.getvalue()
+
+    sql = """SELECT b.*, a.label AS account_label FROM bookings b
+             LEFT JOIN accounts a ON a.id=b.account_id WHERE 1=1"""
+    args: list[Any] = []
+    if day_from:
+        sql += " AND b.start_at>=?"
+        args.append(f"{day_from}T00:00:00")
+    if day_to:
+        sql += " AND b.start_at<=?"
+        args.append(f"{day_to}T23:59:59")
+    sql += " ORDER BY b.start_at DESC"
+
     conn = connect()
     try:
-        sql = """SELECT b.*, a.label AS account_label FROM bookings b
-                 LEFT JOIN accounts a ON a.id=b.account_id WHERE 1=1"""
-        args: list[Any] = []
-        if day_from:
-            sql += " AND b.start_at>=?"
-            args.append(f"{day_from}T00:00:00")
-        if day_to:
-            sql += " AND b.start_at<=?"
-            args.append(f"{day_to}T23:59:59")
-        sql += " ORDER BY b.start_at DESC"
-        rows = conn.execute(sql, tuple(args)).fetchall()
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(["预约ID", "主题", "借用人", "部门", "联系方式", "账号", "开始", "结束",
-                         "状态", "会议号", "入会链接", "密码", "创建时间"])
-        for r in rows:
-            writer.writerow([r["id"], r["subject"], r["requester"], r["dept"], r["contact"],
-                             r["account_label"] or "", r["start_at"], r["end_at"], r["status"],
-                             r["meeting_code"], r["join_url"], r["password"], r["created_at"]])
-        return buf.getvalue()
+        for r in conn.execute(sql, tuple(args)):
+            chunk = io.StringIO()
+            csv.writer(chunk).writerow([
+                r["id"], r["subject"], r["requester"], r["dept"], r["contact"],
+                r["account_label"] or "", r["start_at"], r["end_at"], r["status"],
+                r["meeting_code"], r["join_url"], r["password"], r["created_at"],
+            ])
+            yield chunk.getvalue()
     finally:
         conn.close()
 
