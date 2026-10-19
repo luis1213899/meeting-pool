@@ -33,12 +33,18 @@ window.QR = (function () {
     return res;
   }
 
-  // 版本 1-4，纠错级别 M：[总数据码字, [[块数,每块数据码字]], 每块纠错码字]
-  const VER = { 1: [16, [[1, 16]], 10], 2: [28, [[1, 28]], 16], 3: [44, [[1, 44]], 26], 4: [64, [[2, 32]], 18] };
-  const CAP = { 1: 14, 2: 26, 3: 42, 4: 62 };
-  const ALIGN = { 2: [18], 3: [22], 4: [26] };
+  // 版本 1-5，纠错级别 M：[总数据码字, [[块数,每块数据码字]], 每块纠错码字]
+  const VER = {
+    1: [16, [[1, 16]], 10],
+    2: [28, [[1, 28]], 16],
+    3: [44, [[1, 44]], 26],
+    4: [64, [[2, 32]], 18],
+    5: [86, [[2, 43]], 24],
+  };
+  const CAP = { 1: 14, 2: 26, 3: 42, 4: 62, 5: 84 };
+  const ALIGN = { 2: [18], 3: [22], 4: [26], 5: [30] };
 
-  function pickVersion(n) { for (let v = 1; v <= 4; v++) if (n <= CAP[v]) return v; return 0; }
+  function pickVersion(n) { for (let v = 1; v <= 5; v++) if (n <= CAP[v]) return v; return 0; }
 
   function strToBytes(s) {
     const out = [];
@@ -270,10 +276,18 @@ window.QR = (function () {
     const { size, matrix } = res;
     const quiet = 4;
     const s = scale || 8;
-    canvas.width = canvas.height = (size + quiet * 2) * s;
+    const px = (size + quiet * 2) * s;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    // 物理像素尺寸（高 DPI 屏上放大，让扫码器看到清晰的边缘）
+    canvas.width = px * dpr;
+    canvas.height = px * dpr;
+    // CSS 尺寸保持不变，避免撑大布局
+    canvas.style.width = px + 'px';
+    canvas.style.height = px + 'px';
     const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
     ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, px, px);
     ctx.fillStyle = '#000';
     for (let i = 0; i < size; i++) for (let j = 0; j < size; j++) {
       if (matrix[i][j]) ctx.fillRect((j + quiet) * s, (i + quiet) * s, s, s);

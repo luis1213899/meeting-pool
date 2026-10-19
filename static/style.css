@@ -626,7 +626,7 @@ input::placeholder { color: #aab1bd; }
   .gantt-tools { justify-content: flex-start; }
   .gantt { min-width: 760px; }
   .g-row { grid-template-columns: 92px 1fr; }
-  .g-label { position: sticky; left: 0; background: #fff; z-index: 4; padding-right: 8px; font-size: 11.5px; }
+  .g-label { position: sticky; left: 0; background: var(--panel); z-index: 4; padding-right: 8px; font-size: 11.5px; }
   .g-head .g-label { z-index: 5; }
   .g-track { height: 54px; }
   .g-block { top: 10px; bottom: 10px; padding: 0; }
@@ -662,7 +662,7 @@ input::placeholder { color: #aab1bd; }
   /* 页头吸顶，切页签不用滚回顶部 */
   .topbar {
     position: sticky; top: 0; z-index: 30;
-    background: rgba(255,255,255,.94);
+    background: var(--topbar-bg, rgba(255,255,255,.94));
     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     margin: 0 -14px; padding: 10px 14px 8px;
     border-bottom: 1px solid var(--line);
@@ -790,6 +790,7 @@ input::placeholder { color: #aab1bd; }
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
     --shadow-sm: 0 1px 2px rgba(0,0,0,.25);
     --shadow-lg: 0 24px 60px -20px rgba(0,0,0,.7);
+    --topbar-bg: rgba(26,30,40,.94);
   }
 }
 /* Manual dark: class on :root forces dark regardless of system */
@@ -810,7 +811,11 @@ input::placeholder { color: #aab1bd; }
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
   --shadow-sm: 0 1px 2px rgba(0,0,0,.25);
   --shadow-lg: 0 24px 60px -20px rgba(0,0,0,.7);
+  --topbar-bg: rgba(26,30,40,.94);
 }
+/* Manual dark: also apply color-scheme to html so native controls (date picker etc.) render dark */
+:root.dark html, html:has(:root.dark), .dark body { color-scheme: dark; }
+
 /* Manual light: override system dark */
 :root.light {
   color-scheme: light;

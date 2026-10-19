@@ -210,7 +210,7 @@
     if (booking.join_url && window.QR) {
       const canvas = $('#qr-canvas');
       if (canvas) {
-        const ok = QR.toCanvas(booking.join_url, canvas, 5);
+        const ok = QR.toCanvas(booking.join_url, canvas, 8);
         if (!ok) canvas.closest('.qr-section').remove();
       }
     }
@@ -273,17 +273,34 @@
         return;
       }
       box.innerHTML = items.map((b) => `
-        <div class="my-item">
-          <div>
+        <div class="my-item" data-booking-id="${b.id}" data-token="${esc(b.manage_token)}" style="cursor:pointer" title="点击查看会议详情">
+          <div style="flex:1;min-width:0">
             <div class="t">${esc(b.subject)} <span class="code-inline">${esc(b.meeting_code)}</span></div>
             <div class="m">${esc(fmtRange(b.start_at, b.end_at))} · ${esc(b.account_label || '')}</div>
           </div>
-          <div style="display:flex;gap:6px;align-items:center">
+          <div style="display:flex;gap:6px;align-items:center;flex:none">
             ${statusPill(b.status)}
             ${['pending', 'active'].includes(b.status)
               ? `<button class="btn ghost tiny" data-cancel="${b.id}" data-token="${esc(b.manage_token)}">结束</button>` : ''}
           </div>
         </div>`).join('');
+
+      // 点整行展开结果卡
+      $$('[data-booking-id]', box).forEach((row) => {
+        row.onclick = async (e) => {
+          if (e.target.closest('[data-cancel]')) return;
+          const id = Number(row.dataset.bookingId);
+          const token = row.dataset.token;
+          try {
+            const booking = await api(`/api/bookings/${id}?token=${encodeURIComponent(token)}`);
+            renderResult(booking);
+            switchView('borrow');
+          } catch (err) {
+            toast(err.message, 4000, 'err');
+          }
+        };
+      });
+      // 结束按钮独立绑定
       $$('[data-cancel]', box).forEach((btn) => {
         btn.onclick = () => cancelMyBooking(Number(btn.dataset.cancel), btn.dataset.token, false);
       });
